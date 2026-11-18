@@ -301,6 +301,24 @@ The icon is a conductor node fanning out to three agent nodes, on a dark rounded
 
 ![App icon at every size](docs/screenshots/app-icon.png)
 
+## One instance
+
+Only one Orchestrator runs per Windows user and data folder. Launching it again (Orchestrator.cmd, a shortcut,
+the exe, or start at login) does three things:
+
+1. The new launch sends its arguments to the running one over a local socket.
+2. The running one comes back from the tray or un-minimizes and takes the foreground.
+3. The new launch exits with no window.
+
+Details:
+
+- A named mutex prevents a race when two launches start at once. Windows frees the mutex when a process dies, so a
+  crash never leaves a stale lock. A leftover socket is removed and listened on again.
+- `--mcp-server` is never blocked.
+- The lock is keyed on the data folder, so tests, demos and benchmarks with their own `ORCHESTRATOR_HOME` run
+  alongside the real app.
+- `ORCHESTRATOR_MULTI_INSTANCE=1` turns the lock off.
+
 ## Run
 
 ```

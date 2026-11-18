@@ -62,6 +62,18 @@ def main() -> int:
 
         mcp_main()
         return 0
+    from orchestrator import single_instance as single
+
+    guard = None
+    if not single.disabled():
+        key = single.instance_key()
+        guard = single.Mutex(key)
+        if not guard.acquire():  # already running for this user + data folder: hand over and leave
+            from PySide6.QtCore import QCoreApplication
+
+            _qc = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])  # noqa: F841 - for QLocalSocket
+            single.forward(key, sys.argv[1:])
+            return 0
     from orchestrator import startup
     from orchestrator.core import auth
     from orchestrator.lazy_imports import defer_qfw_image_utils
@@ -103,6 +115,14 @@ def main() -> int:
     # tray and shortcuts are set up right after the first paint (MainWindow.finish_startup).
     win = MainWindow(db, mgr, icon, indexer=SessionIndexer(db), runner=ScheduleRunner(db, mgr), lazy=True)
     startup.mark("window_created")
+    if guard is not None:
+        def second_launch(args: list[str]) -> None:
+            if "--tray" in args:
+                return  # start-at-login while already running: nothing to show
+            single.bring_window_to_front(win)
+
+        win._instance_server = single.listen(key, second_launch, win)
+        app.aboutToQuit.connect(guard.release)
     if startup.bench_quit():
         startup.on_ready = lambda: QTimer.singleShot(300, win.quit_app)
 

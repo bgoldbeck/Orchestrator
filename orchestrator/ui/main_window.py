@@ -386,9 +386,9 @@ class MainWindow(FluentWindow):
 
     # ---- tray behavior
     def bring_to_front(self) -> None:
-        self.showNormal() if self.isMinimized() else self.show()
-        self.raise_()
-        self.activateWindow()
+        from orchestrator.single_instance import bring_window_to_front
+
+        bring_window_to_front(self)
 
     def open_session(self, sid: int) -> None:
         self.bring_to_front()
