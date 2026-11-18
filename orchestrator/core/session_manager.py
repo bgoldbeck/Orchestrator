@@ -49,6 +49,10 @@ class SessionManager(QObject):
         self._tasks: dict[int, asyncio.Task] = {}
         self._adapters: dict[int, AgentAdapter] = {}
         self.live: dict[int, dict] = {}  # sid -> {"buf": [...], "tools": {id: ToolCall}} of the running turn
+        # Per-session run options set by the orchestrator: {"claude_mode", "sandbox"}.
+        self.run_options: dict[int, dict] = {}
+        # sid -> MCP servers for that session's turns (set by OrchestrationManager), or None.
+        self.mcp_provider = None
 
     def any_running(self) -> bool:
         return any(not t.done() for t in self._tasks.values())
@@ -85,6 +89,7 @@ class SessionManager(QObject):
 
         if engine == "claude":
             mode = pol["claude_mode"] if pol else self.db.get_setting("claude.permission_mode", "default")
+            mode = self.run_options.get(sid, {}).get("claude_mode", mode)
             return ClaudeAdapter(approval_handler=approve, permission_mode=mode)
         return CodexAdapter(approval_handler=approve, env=auth.codex_status().env)
 
@@ -122,10 +127,12 @@ class SessionManager(QObject):
         self._adapters[sid] = adapter
         self._set_status(sid, "running")
         cwd = Path(s.cwd) if s.cwd and Path(s.cwd).is_dir() else Path(proj.path)
+        sandbox = (POLICIES[policy]["sandbox"] if policy in POLICIES
+                   else self.db.get_setting("codex.sandbox", "workspace-write"))
         req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
                           resume_id=s.engine_session_id,
-                          sandbox=POLICIES[policy]["sandbox"] if policy in POLICIES
-                          else self.db.get_setting("codex.sandbox", "workspace-write"))
+                          sandbox=self.run_options.get(sid, {}).get("sandbox", sandbox),
+                          mcp=self.mcp_provider(sid) if self.mcp_provider else None)
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"

@@ -20,6 +20,9 @@ class TurnRequest:
     effort: str
     resume_id: str | None = None
     sandbox: str = "workspace-write"  # Codex only
+    # Local stdio MCP servers for this turn: name -> {"command", "args", "env", "tool_timeout_sec"}.
+    # Their tools are trusted (auto-approved) on both engines.
+    mcp: dict[str, dict] | None = None
 
 
 class AgentAdapter(abc.ABC):

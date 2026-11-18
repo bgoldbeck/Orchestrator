@@ -140,8 +140,29 @@ def codex_executable() -> str | None:
     return shutil.which("codex")
 
 
+def _toml_str(s: str) -> str:
+    """TOML literal string (no escapes, so Windows paths stay as they are)."""
+    if "'" in s or "\n" in s:
+        return json.dumps(s)
+    return f"'{s}'"
+
+
+def codex_mcp_overrides(mcp: dict[str, dict] | None) -> list[str]:
+    """`-c` overrides that register local stdio MCP servers with auto-approved tools."""
+    out: list[str] = []
+    for name, c in (mcp or {}).items():
+        key = f"mcp_servers.{name}"
+        args = "[" + ",".join(_toml_str(a) for a in c.get("args", [])) + "]"
+        env = "{" + ",".join(f"{k}={_toml_str(v)}" for k, v in c.get("env", {}).items()) + "}"
+        out += ["-c", f"{key}.command={_toml_str(c['command'])}", "-c", f"{key}.args={args}",
+                "-c", f"{key}.env={env}", "-c", f"{key}.default_tools_approval_mode='approve'"]
+        if c.get("tool_timeout_sec"):
+            out += ["-c", f"{key}.tool_timeout_sec={int(c['tool_timeout_sec'])}"]
+    return out
+
+
 def build_codex_cmd(exe: str, req: TurnRequest) -> list[str]:
-    common = ["--json", "--skip-git-repo-check"]
+    common = ["--json", "--skip-git-repo-check", *codex_mcp_overrides(req.mcp)]
     if req.model:
         common += ["-m", req.model]
     if req.effort:

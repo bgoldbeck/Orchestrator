@@ -144,6 +144,17 @@ def _child_env(token_env: dict[str, str]) -> dict[str, str]:
     return dict(token_env)
 
 
+def claude_mcp_options(mcp: dict[str, dict] | None) -> tuple[dict, dict[str, str], list[str]]:
+    """(mcp_servers, extra env, allowed_tools) for ClaudeAgentOptions."""
+    if not mcp:
+        return {}, {}, []
+    servers = {name: {"type": "stdio", "command": c["command"], "args": list(c.get("args", [])),
+                      "env": dict(c.get("env", {}))} for name, c in mcp.items()}
+    longest = max(int(c.get("tool_timeout_sec", 0) or 0) for c in mcp.values())
+    env = {"MCP_TOOL_TIMEOUT": str(longest * 1000)} if longest else {}
+    return servers, env, [f"mcp__{name}" for name in mcp]  # server-level allow: all of its tools
+
+
 class ClaudeAdapter(AgentAdapter):
     engine = "claude"
     label = "Claude"
@@ -177,8 +188,10 @@ class ClaudeAdapter(AgentAdapter):
         bridge = ThreadBridge()
         self._stopped = False
 
+        trusted = tuple(f"mcp__{name}__" for name in (req.mcp or {}))
+
         async def can_use_tool(tool_name: str, tool_input: dict, _ctx):
-            if handler is None:
+            if handler is None or (trusted and tool_name.startswith(trusted)):
                 return sdk.PermissionResultAllow()
             req_ev = NeedsApproval(id=f"perm-{id(tool_input)}", tool=tool_name,
                                    detail=tool_summary(tool_name, tool_input))
@@ -188,7 +201,10 @@ class ClaudeAdapter(AgentAdapter):
                 return sdk.PermissionResultAllow()
             return sdk.PermissionResultDeny(message="The user denied this action.")
 
+        mcp_servers, extra_env, allowed = claude_mcp_options(req.mcp)
         options = sdk.ClaudeAgentOptions(
+            mcp_servers=mcp_servers,
+            allowed_tools=allowed,
             cwd=str(req.cwd),
             model=req.model or None,
             resume=req.resume_id,
@@ -196,7 +212,7 @@ class ClaudeAdapter(AgentAdapter):
             include_partial_messages=True,
             permission_mode=self.permission_mode,
             can_use_tool=can_use_tool,
-            env=_child_env(status.env),
+            env={**_child_env(status.env), **extra_env},
             stderr=lambda _line: None,
         )
 

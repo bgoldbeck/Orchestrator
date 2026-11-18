@@ -1,0 +1,123 @@
+"""Orchestrate page board + sidebar nesting (offscreen, fake engines)."""
+import asyncio
+import os
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from orchestrator.storage.db import Database  # noqa: E402
+from tests.test_orchestration import REPORT, FakeMgr  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def env(qapp, tmp_path):
+    from PySide6.QtCore import Signal
+
+    from orchestrator.core.orchestration import OrchestrationManager
+
+    class Mgr(FakeMgr):
+        approval_requested = Signal(int, object, object)
+        event = Signal(int, object)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    db = Database(tmp_path / "t.db")
+    proj = db.add_project(str(tmp_path), "proj")
+    mgr = Mgr(db)
+    om = OrchestrationManager(db, mgr)
+    yield db, proj, mgr, om, loop
+    om.bridge.stop()
+    loop.close()
+
+
+def flush(qapp):
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    qapp.processEvents()
+
+
+def test_board_cards_status_and_approval(env, qapp):
+    from orchestrator.core.events import NeedsApproval
+    from orchestrator.ui.orchestrate_page import OrchestratePage
+
+    db, proj, mgr, om, loop = env
+    page = OrchestratePage(db, mgr, om)
+    page.resize(1200, 900)
+    page.goal.setPlainText("")
+    page._start()
+    assert "goal" in page.composerError.text().lower()  # empty goal refused
+    page.goal.setPlainText("Do two things")
+    page._start()
+    o = db.orchestrations(proj.id)[0]
+    assert page.current == o.id and page.composer.isHidden() and page.planner.isVisibleTo(page)
+    a = om.delegate(o.id, "first", title="First")["task_id"]
+    b = om.delegate(o.id, "second", title="Second", engine="claude")["task_id"]
+    page.render_board()
+    flush(qapp)
+    assert set(page.cards) == {a, b} and "2 tasks" in page.boardHead.text()
+    # approval from a sub-agent shows on its card; Allow resolves the engine's future
+    fut = loop.create_future()
+    sid_b = db.task(b).session_id
+    mgr.approval_requested.emit(sid_b, NeedsApproval("x", "Bash", "npm test"), fut)
+    page.render_board()
+    flush(qapp)
+    card = page.cards[b]
+    assert card.approval.isVisibleTo(card) and "Bash" in card.approvalText.text()
+    card._answer(True)
+    assert fut.done() and fut.result() is True
+    mgr.finish(db.task(a).session_id, REPORT)
+    page.render_board()
+    flush(qapp)
+    assert db.task(a).status == "done" and "1 done" in page.boardHead.text()
+    texts = [w.text() for w in page.cards[a].findChildren(type(page.cards[a].sub))]
+    assert any("hello.py" in t for t in texts)
+
+
+def test_board_one_column_when_narrow(env, qapp):
+    from orchestrator.ui.orchestrate_page import OrchestratePage
+
+    db, proj, mgr, om, loop = env
+    o = om.start(proj.id, "g", "codex", "gpt-6-luna", "low")
+    for i in range(3):
+        om.delegate(o.id, f"t{i}")
+    page = OrchestratePage(db, mgr, om)
+    page.resize(700, 800)
+    page.show()
+    page.show_run(o.id)
+    flush(qapp)
+    assert page.cols[0].count() - 1 == 3 and page.cols[1].count() - 1 == 0
+    page.resize(1300, 800)
+    page.render_board()
+    flush(qapp)
+    assert page.cols[0].count() - 1 == 2 and page.cols[1].count() - 1 == 1
+    page.hide()
+
+
+def test_sidebar_nests_subagent_chats(env, qapp):
+    from orchestrator.ui.sidebar import Sidebar
+
+    db, proj, mgr, om, loop = env
+    mgr.any_running = lambda: False
+    o = om.start(proj.id, "g", "codex", "gpt-6-luna", "low")
+    tid = om.delegate(o.id, "child task", title="Child")["task_id"]
+    sb = Sidebar(db, mgr)
+    sb.reload()
+    pi = sb.tree.topLevelItem(0)
+    planner = next(pi.child(i) for i in range(pi.childCount()))
+    assert planner.data(0, 0x0101) == o.session_id  # ROLE_ID
+    assert planner.childCount() == 1 and planner.child(0).text(0) == "Child"
+    assert sb._find(db.task(tid).session_id) is planner.child(0)
+    # leaving a sub-agent chat that has no messages yet must not delete it
+    sid = db.task(tid).session_id
+    sb.current_sid = sid
+    sb.select(None)
+    assert db.session(sid) is not None
