@@ -39,6 +39,18 @@ class SessionManager(QObject):
         self.db = db
         self._tasks: dict[int, asyncio.Task] = {}
         self._adapters: dict[int, AgentAdapter] = {}
+        self.live: dict[int, dict] = {}  # sid -> {"buf": [...], "tools": {id: ToolCall}} of the running turn
+
+    def any_running(self) -> bool:
+        return any(not t.done() for t in self._tasks.values())
+
+    def live_text(self, sid: int) -> str:
+        st = self.live.get(sid)
+        return "".join(st["buf"]) if st else ""
+
+    def live_tools(self, sid: int) -> list[ToolCall]:
+        st = self.live.get(sid)
+        return list(st["tools"].values()) if st else []
 
     def is_running(self, sid: int) -> bool:
         t = self._tasks.get(sid)
@@ -68,7 +80,7 @@ class SessionManager(QObject):
         s = self.db.session(sid)
         if not s:
             return
-        if not self.db.messages(sid):
+        if s.source == "app" and not self.db.messages(sid):
             self.db.update_session(sid, title=make_title(text))
             self.session_updated.emit(sid)
         self.db.add_message(sid, "user", "text", {"text": text})
@@ -87,12 +99,14 @@ class SessionManager(QObject):
         adapter = self._adapter(sid, s.engine)
         self._adapters[sid] = adapter
         self._set_status(sid, "running")
-        req = TurnRequest(prompt=prompt, cwd=Path(proj.path), model=s.model or "", effort=s.effort or "",
+        cwd = Path(s.cwd) if s.cwd and Path(s.cwd).is_dir() else Path(proj.path)
+        req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
                           resume_id=s.engine_session_id,
                           sandbox=self.db.get_setting("codex.sandbox", "workspace-write"))
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"
+        self.live[sid] = {"buf": buf, "tools": pending_tools}
         seen_warnings = {m["text"] for m in self.db.messages(sid) if m["kind"] == "error" and not m.get("fatal", True)}
 
         def flush_text() -> None:
@@ -105,8 +119,9 @@ class SessionManager(QObject):
             async for ev in adapter.run(req):
                 if isinstance(ev, Started):
                     if ev.session_id and ev.session_id != s.engine_session_id:
-                        self.db.update_session(sid, engine_session_id=ev.session_id)
+                        self.db.claim_engine_id(sid, s.engine, ev.session_id)
                         s.engine_session_id = ev.session_id
+                        self.session_updated.emit(sid)
                 elif isinstance(ev, Text):
                     if ev.delta:
                         buf.append(ev.text)
@@ -150,4 +165,5 @@ class SessionManager(QObject):
                 self.db.add_message(sid, "tool", "tool", {"id": call.id, "name": call.name, "summary": call.summary,
                                                           "output": "", "is_error": True})
             self._adapters.pop(sid, None)
+            self.live.pop(sid, None)
             self._set_status(sid, final_status)

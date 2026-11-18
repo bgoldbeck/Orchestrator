@@ -1,9 +1,11 @@
 """Left pane: projects (folders) with chats underneath."""
 from __future__ import annotations
 
+import math
 import os
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter
 from PySide6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QTreeWidgetItem, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
@@ -15,16 +17,97 @@ from qfluentwidgets import (
     SearchLineEdit,
     ToolTipFilter,
     TransparentToolButton,
+    TreeItemDelegate,
     TreeWidget,
 )
 
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database
-from orchestrator.ui.theme import STATUS_COLORS, dot_icon, palette
+from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, palette
+from orchestrator.ui_text import age
 
 ROLE_KIND = Qt.UserRole
 ROLE_ID = Qt.UserRole + 1
+ROLE_ENGINE = Qt.UserRole + 2
+ROLE_STATUS = Qt.UserRole + 3
+ROLE_AGE = Qt.UserRole + 4
+ROLE_TITLE = Qt.UserRole + 5
+
+
+class ChatRowDelegate(TreeItemDelegate):
+    """Session rows: status dot (pulses while running), engine badge, title, age."""
+
+    def __init__(self, tree) -> None:
+        super().__init__(tree)
+        self.phase = 0.0
+
+    def sizeHint(self, option, index):  # noqa: N802
+        sz = super().sizeHint(option, index)
+        return QSize(sz.width(), 30 if index.data(ROLE_KIND) == "header" else 32)
+
+    def initStyleOption(self, option, index) -> None:  # noqa: N802
+        super().initStyleOption(option, index)
+        if index.data(ROLE_KIND) in ("session", "header"):
+            option.text = ""
+            option.icon = QIcon()
+
+    def paint(self, painter: QPainter, option, index) -> None:
+        kind = index.data(ROLE_KIND)
+        if kind == "header":
+            painter.save()
+            painter.setPen(QColor(palette()["muted"]))
+            f = QFont(option.font)
+            f.setPointSizeF(7.5)
+            f.setBold(True)
+            f.setLetterSpacing(QFont.AbsoluteSpacing, 1)
+            painter.setFont(f)
+            painter.drawText(option.rect.adjusted(4, 8, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, index.data(ROLE_TITLE))
+            painter.restore()
+            return
+        super().paint(painter, option, index)
+        if kind != "session":
+            return
+        r = option.rect
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        status = index.data(ROLE_STATUS) or "idle"
+        col = QColor(STATUS_COLORS.get(status, STATUS_COLORS["idle"]))
+        cy = r.center().y()
+        x = r.x() + 6
+        if status in ("running", "waiting"):
+            halo = QColor(col)
+            halo.setAlphaF(0.18 + 0.22 * (0.5 + 0.5 * math.sin(self.phase)))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(halo)
+            painter.drawEllipse(QPointF(x + 4, cy), 7, 7)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(col)
+        painter.drawEllipse(QPointF(x + 4, cy), 3.5, 3.5)
+        x += 16
+        engine = index.data(ROLE_ENGINE) or ""
+        painter.setBrush(QColor(ENGINE_COLORS.get(engine, "#888")))
+        painter.drawRoundedRect(QRectF(x, cy - 7, 14, 14), 4, 4)
+        painter.setPen(QColor("white"))
+        bf = QFont(option.font)
+        bf.setPixelSize(9)
+        bf.setBold(True)
+        painter.setFont(bf)
+        painter.drawText(QRectF(x, cy - 7, 14, 14), Qt.AlignCenter, engine[:1].upper())
+        x += 22
+        age_txt = index.data(ROLE_AGE) or ""
+        af = QFont(option.font)
+        af.setPointSizeF(8)
+        painter.setFont(af)
+        aw = painter.fontMetrics().horizontalAdvance(age_txt)
+        painter.setPen(QColor(palette()["faint"]))
+        painter.drawText(QRectF(r.right() - aw - 8, r.y(), aw + 4, r.height()), Qt.AlignVCenter | Qt.AlignRight, age_txt)
+        painter.setFont(QFont(option.font))
+        title_w = r.right() - aw - 16 - x
+        title = painter.fontMetrics().elidedText(index.data(ROLE_TITLE) or "", Qt.ElideRight, int(title_w))
+        painter.setPen(QColor(palette()["text"]))
+        painter.drawText(QRectF(x, r.y(), title_w, r.height()), Qt.AlignVCenter | Qt.AlignLeft, title)
+        painter.restore()
 
 
 class Sidebar(QFrame):
@@ -75,7 +158,15 @@ class Sidebar(QFrame):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
         self.tree.itemClicked.connect(self._clicked)
+        self.delegate = ChatRowDelegate(self.tree)
+        self.tree.setItemDelegate(self.delegate)
         lay.addWidget(self.tree, 1)
+        self._pulse = QTimer(self)
+        self._pulse.timeout.connect(self._tick)
+        self._pulse.start(90)
+        self._ages = QTimer(self)
+        self._ages.timeout.connect(self._refresh_ages)
+        self._ages.start(60_000)
 
         manager.status_changed.connect(lambda sid, _s: self._refresh_item(sid))
         manager.session_updated.connect(self._refresh_item)
@@ -86,34 +177,60 @@ class Sidebar(QFrame):
         expanded = {self.tree.topLevelItem(i).data(0, ROLE_ID) for i in range(self.tree.topLevelItemCount())
                     if self.tree.topLevelItem(i).isExpanded()}
         first = self.tree.topLevelItemCount() == 0
+        scroll = self.tree.verticalScrollBar().value()
         self.tree.clear()
+        header_added = False
         for proj in self.db.projects():
+            if proj.auto and not header_added:
+                hi = QTreeWidgetItem([""])
+                hi.setData(0, ROLE_KIND, "header")
+                hi.setData(0, ROLE_TITLE, "DISCOVERED IN ENGINE HISTORY")
+                hi.setFlags(Qt.NoItemFlags)
+                self.tree.addTopLevelItem(hi)
+                header_added = True
             pi = QTreeWidgetItem([proj.name])
-            pi.setIcon(0, FIF.FOLDER.icon())
+            pi.setIcon(0, (FIF.HISTORY if proj.auto else FIF.FOLDER).icon())
             pi.setData(0, ROLE_KIND, "project")
             pi.setData(0, ROLE_ID, proj.id)
             pi.setToolTip(0, proj.path)
             self.tree.addTopLevelItem(pi)
-            for s in self.db.sessions(proj.id):
-                ci = QTreeWidgetItem([s.title])
+            for sess in self.db.sessions(proj.id):
+                ci = QTreeWidgetItem([sess.title])
                 ci.setData(0, ROLE_KIND, "session")
-                ci.setData(0, ROLE_ID, s.id)
-                self._decorate(ci, s.id)
+                ci.setData(0, ROLE_ID, sess.id)
+                self._decorate(ci, sess)
                 pi.addChild(ci)
-                if s.id == self.current_sid:
+                if sess.id == self.current_sid:
                     self.tree.setCurrentItem(ci)
-            pi.setExpanded(first or proj.id in expanded or any(
+            pi.setExpanded((first and not proj.auto) or proj.id in expanded or any(
                 pi.child(i).data(0, ROLE_ID) == self.current_sid for i in range(pi.childCount())))
         self._filter(self.search.text())
+        self.tree.verticalScrollBar().setValue(scroll)
 
-    def _decorate(self, item: QTreeWidgetItem, sid: int) -> None:
-        s = self.db.session(sid)
+    def _decorate(self, item: QTreeWidgetItem, s) -> None:
+        if isinstance(s, int):
+            s = self.db.session(s)
         if not s:
             return
-        status = s.status
         item.setText(0, s.title)
-        item.setIcon(0, dot_icon(STATUS_COLORS.get(status, STATUS_COLORS["idle"]), ring=status in ("running", "waiting")))
-        item.setToolTip(0, f"{ENGINES.get(s.engine, s.engine)} · {s.model or 'default'} · {s.effort or 'default'}\nStatus: {status}")
+        item.setData(0, ROLE_TITLE, s.title)
+        item.setData(0, ROLE_ENGINE, s.engine)
+        item.setData(0, ROLE_STATUS, s.status)
+        item.setData(0, ROLE_AGE, age(s.last_active))
+        src = "Imported from engine history" if s.source == "imported" else "Started in Orchestrator"
+        item.setToolTip(0, f"{s.title}\n{ENGINES.get(s.engine, s.engine)} · {s.model or 'default model'} · "
+                           f"{s.effort or 'default effort'}\n{src} · status: {s.status}")
+
+    def _tick(self) -> None:
+        self.delegate.phase += 0.35
+        if self.mgr.any_running():
+            self.tree.viewport().update()
+
+    def _refresh_ages(self) -> None:
+        for i in range(self.tree.topLevelItemCount()):
+            pi = self.tree.topLevelItem(i)
+            for j in range(pi.childCount()):
+                self._decorate(pi.child(j), pi.child(j).data(0, ROLE_ID))
 
     def _find(self, sid: int) -> QTreeWidgetItem | None:
         for i in range(self.tree.topLevelItemCount()):
@@ -135,6 +252,9 @@ class Sidebar(QFrame):
         for i in range(self.tree.topLevelItemCount()):
             pi = self.tree.topLevelItem(i)
             any_vis = False
+            if pi.data(0, ROLE_KIND) == "header":
+                pi.setHidden(bool(t))
+                continue
             for j in range(pi.childCount()):
                 ch = pi.child(j)
                 vis = not t or t in ch.text(0).lower()

@@ -30,7 +30,7 @@ class ChatsPage(QWidget):
 
 
 class MainWindow(FluentWindow):
-    def __init__(self, db: Database, mgr: SessionManager, icon: QIcon | None = None) -> None:
+    def __init__(self, db: Database, mgr: SessionManager, icon: QIcon | None = None, indexer=None) -> None:
         super().__init__()
         self.db = db
         self.setWindowTitle("Orchestrator")
@@ -46,6 +46,10 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setCollapsible(True)
         self.chats.chat.openSettingsRequested.connect(lambda: self.switchTo(self.settings))
         self.stackedWidget.currentChanged.connect(self._on_page)
+        self.indexer = indexer
+        if indexer is not None:
+            indexer.changed.connect(self.chats.sidebar.reload)
+            indexer.start()
 
     def _on_page(self, _i: int) -> None:
         if self.stackedWidget.currentWidget() is self.settings:

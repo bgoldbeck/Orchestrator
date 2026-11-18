@@ -25,6 +25,7 @@ from qfluentwidgets import (
 )
 
 from orchestrator.core.catalog import ENGINES
+from orchestrator.core.indexer import load_history
 from orchestrator.core.events import Done, Error, NeedsApproval, Text, ToolCall, ToolResult, Usage
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database, Session
@@ -343,10 +344,11 @@ class ChatView(QWidget):
             return
         proj = self.db.project(s.project_id)
         self.title.setText(s.title)
-        self.path.setText(proj.path if proj else "")
+        where = s.cwd or (proj.path if proj else "")
+        self.path.setText(where + ("   ·   imported from engine history" if s.source == "imported" else ""))
         self.pill.set_value(s.engine, s.model or "", s.effort or "", locked=bool(s.engine_session_id))
-        msgs = self.db.messages(s.id)
-        if not msgs:
+        msgs = self._history(s)
+        if not msgs and not self.mgr.is_running(s.id):
             self.scroll.hide()
             self.empty.show()
             self.empty.show_state(FIF.ROBOT, f"New chat in {proj.name if proj else 'project'}",
@@ -359,6 +361,19 @@ class ChatView(QWidget):
         self.prompt.set_running(running)
         pending = [(r, f) for r, f in self._approvals.get(s.id, []) if not f.done()]
         self._approvals[s.id] = pending
+        if running:
+            # Switched back to a chat that is still working: restore its live state.
+            self.empty.hide()
+            self.scroll.show()
+            for call in self.mgr.live_tools(s.id):
+                card = ToolCard(call.name, call.summary)
+                self._tools[call.id] = card
+                self._add(card, False)
+            live = self.mgr.live_text(s.id)
+            if live:
+                self._current = AssistantMessage(s.engine, self._engine_label(), live)
+                self._live = live
+                self._add(self._current, False)
         if running and not pending:
             self._show_dots()
         for r, f in pending:
@@ -385,7 +400,21 @@ class ChatView(QWidget):
     def _engine_label(self) -> str:
         return ENGINES.get(self.session.engine, "") if self.session else ""
 
+    HISTORY_LIMIT = 150
+
+    def _history(self, s: Session) -> list[dict]:
+        if s.source == "imported" and s.file_path:
+            # Engine log is the source of truth for imported chats (read-only).
+            return load_history(s.engine, s.file_path)
+        return self.db.messages(s.id)
+
     def _render_history(self, msgs: list[dict]) -> None:
+        if len(msgs) > self.HISTORY_LIMIT:
+            note = CaptionLabel(f"Showing the last {self.HISTORY_LIMIT} of {len(msgs)} items", self.column)
+            note.setAlignment(Qt.AlignCenter)
+            note.setStyleSheet(f"color:{palette()['faint']};")
+            self._add(note, False)
+            msgs = msgs[-self.HISTORY_LIMIT:]
         for m in msgs:
             k = m["kind"]
             if m["role"] == "user":

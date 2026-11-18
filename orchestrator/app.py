@@ -32,6 +32,7 @@ def main() -> int:
     import qasync
     from qfluentwidgets import Theme, setFontFamilies, setTheme, setThemeColor
 
+    from orchestrator.core.session_index import SessionIndexer
     from orchestrator.core.session_manager import SessionManager
     from orchestrator.storage.db import Database
     from orchestrator.ui.main_window import MainWindow
@@ -56,7 +57,7 @@ def main() -> int:
     app.aboutToQuit.connect(closing.set)
 
     mgr = SessionManager(db)
-    win = MainWindow(db, mgr, _app_icon())
+    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db))
     win.show()
 
     with loop:
