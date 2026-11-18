@@ -24,6 +24,7 @@ from qfluentwidgets import (
     TimePicker,
 )
 
+from orchestrator.core import model_registry
 from orchestrator.core.scheduler import ScheduleRunner, fmt_when, quick_times
 from orchestrator.core.session_manager import POLICIES
 from orchestrator.storage.db import Database
@@ -54,6 +55,8 @@ class RunOnceView(FlyoutViewBase):
         engine = prefill.get("engine") or last[0]
         model = prefill.get("model") or (last[1] if engine == last[0] else db.default_model(engine)[0])
         effort = prefill.get("effort") or (last[2] if engine == last[0] else db.default_model(engine)[1])
+        if not prefill.get("session_id"):  # new chat: start from an allowed model
+            engine, model, effort = model_registry.pick(db, engine, model, effort) or (engine, model, effort)
         self.pill = ModelPill(db, self)
         self.pill.set_value(engine, model, effort, locked=bool(prefill.get("session_id")))
         self.pill.changed.connect(lambda e, m, f: self.pill.set_value(e, m, f, self.pill.engine_locked))
@@ -171,6 +174,9 @@ class RunOnceView(FlyoutViewBase):
 
     def _schedule(self) -> None:
         d = self.data()
+        if not model_registry.is_allowed(self.db, d["engine"], d["model"] or ""):
+            self.summary.setText(model_registry.disabled_message(self.db, d["engine"], d["model"] or ""))
+            return
         if not d["prompt"]:
             self.summary.setText("Write the prompt first")
             return

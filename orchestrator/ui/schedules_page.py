@@ -23,6 +23,7 @@ from qfluentwidgets import (
     TransparentToolButton,
 )
 
+from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.scheduler import ScheduleRunner, describe, fmt_when
 from orchestrator.core.session_manager import POLICIES
@@ -67,7 +68,7 @@ class ScheduleCard(QFrame):
         title.setSpacing(0)
         name = StrongBodyLabel(s.name, self)
         proj = db.project(s.project_id)
-        model_label = next((m.label for m in db.models(s.engine) if m.id == s.model), s.model or "default")
+        model_label = model_registry.label(db, s.engine, s.model or "")
         sub = CaptionLabel(f"{proj.name if proj else '?'}  ·  {ENGINES.get(s.engine, s.engine)} · {model_label} · "
                            f"{s.effort or 'default'}", self)
         sub.setStyleSheet(f"color:{p['muted']};")
@@ -99,6 +100,13 @@ class ScheduleCard(QFrame):
         meta = QHBoxLayout()
         meta.setContentsMargins(36, 2, 0, 0)
         meta.setSpacing(8)
+        if not model_registry.is_allowed(db, s.engine, s.model or "", strict=True):
+            warn = chip("Model disabled", self)
+            warn.setObjectName("modelDisabledChip")
+            warn.setToolTip(model_registry.disabled_message(db, s.engine, s.model or "") +
+                            " Runs are skipped until you edit this schedule.")
+            warn.setStyleSheet(warn.styleSheet() + "color:#f59e0b; border-color:#f59e0b;")
+            meta.addWidget(warn)
         meta.addWidget(chip(describe(s), self))
         meta.addWidget(chip(f"Permissions: {POLICIES.get(s.permission, {}).get('label', s.permission)}", self))
         meta.addWidget(chip("New chat each run" if s.new_or_resume == "new" else "Continues a chat", self))

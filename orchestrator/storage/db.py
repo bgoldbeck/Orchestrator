@@ -59,6 +59,7 @@ MIGRATIONS = [
     ("sessions", "file_path", "TEXT"),
     ("sessions", "file_mtime", "REAL"),
     ("sessions", "cwd", "TEXT"),
+    ("models", "enabled", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 
@@ -130,6 +131,7 @@ class Model:
     id: str
     label: str
     efforts: list[str]
+    enabled: bool = True
 
 
 class Database:
@@ -362,13 +364,22 @@ class Database:
     # -- models
     def models(self, engine: str | None = None) -> list[Model]:
         q = "SELECT * FROM models" + (" WHERE engine=?" if engine else "") + " ORDER BY engine, sort, id"
-        return [Model(r["engine"], r["id"], r["label"], json.loads(r["efforts_json"]))
+        return [Model(r["engine"], r["id"], r["label"], json.loads(r["efforts_json"]), bool(r["enabled"]))
                 for r in self.conn.execute(q, (engine,) if engine else ())]
 
     def save_models(self, models: list[Model]) -> None:
         self.conn.execute("DELETE FROM models")
-        self.conn.executemany("INSERT OR REPLACE INTO models(engine,id,label,efforts_json,sort) VALUES(?,?,?,?,?)",
-                              [(m.engine, m.id, m.label, json.dumps(m.efforts), i) for i, m in enumerate(models)])
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO models(engine,id,label,efforts_json,sort,enabled) VALUES(?,?,?,?,?,?)",
+            [(m.engine, m.id, m.label, json.dumps(m.efforts), i, int(m.enabled)) for i, m in enumerate(models)])
+        self.conn.commit()
+
+    def set_model_enabled(self, engine: str, model_id: str | None, enabled: bool) -> None:
+        """Turn one model (or, with model_id None, every model of `engine`) on or off."""
+        if model_id is None:
+            self.conn.execute("UPDATE models SET enabled=? WHERE engine=?", (int(enabled), engine))
+        else:
+            self.conn.execute("UPDATE models SET enabled=? WHERE engine=? AND id=?", (int(enabled), engine, model_id))
         self.conn.commit()
 
     def reset_models(self) -> None:

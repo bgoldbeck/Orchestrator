@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from orchestrator.core import model_registry
 from orchestrator.core.session_manager import POLICIES, SessionManager
 from orchestrator.storage.db import Database, Schedule, app_dir
 from orchestrator.ui_text import short_title
@@ -106,6 +107,7 @@ class ScheduleRunner(QObject):
     changed = Signal()
     run_started = Signal(int, int)  # schedule id, session id
     run_finished = Signal(int, int, str)  # schedule id, session id, status
+    run_blocked = Signal(int, str)  # schedule id, why (e.g. its model is disabled)
 
     def __init__(self, db: Database, mgr: SessionManager, jobs_url: str | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -222,6 +224,15 @@ class ScheduleRunner(QObject):
             self.changed.emit()
             return rid
         sid: int | None
+        target = self.db.session(s.session_id) if s.new_or_resume == "resume" and s.session_id else None
+        engine, model = (target.engine, target.model or "") if target else (s.engine, s.model or "")
+        if not model_registry.is_allowed(self.db, engine, model, strict=not target):
+            # Never run a disabled model and never swap in another one: skip and flag it.
+            why = "Model disabled: " + model_registry.disabled_message(self.db, engine, model)
+            rid = self.db.add_run(s.id, None, "skipped", why)
+            self.run_blocked.emit(s.id, why)
+            self.changed.emit()
+            return rid
         if s.new_or_resume == "resume":
             sid = s.session_id if s.session_id and self.db.session(s.session_id) else None
             if sid is None:

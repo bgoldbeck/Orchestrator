@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from orchestrator.core import auth
+from orchestrator.core import model_registry
 from orchestrator.core.events import (
     Done,
     Error,
@@ -98,6 +99,8 @@ class SessionManager(QObject):
         s = self.db.session(sid)
         if not s:
             return False
+        if not model_registry.is_allowed(self.db, s.engine, s.model or ""):
+            return False  # disabled model: never run it, never swap it silently
         if s.source == "app" and not self.db.messages(sid):
             self.db.update_session(sid, title=make_title(text))
             self.session_updated.emit(sid)
