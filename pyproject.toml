@@ -1,0 +1,8 @@
+[project]
+name = "orchestrator"
+version = "0.1.0"
+description = "Desktop app that drives Claude Code and Codex"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

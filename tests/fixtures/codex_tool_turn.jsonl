@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"01a1ec71-3d73-7862-b874-4f1a63f5c8d0"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (C:\\Users\\user\\.codex\\config.toml): `features.rmcp_client` is ignored."}}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (C:\\Users\\user\\.codex\\config.toml): `features.rmcp_client` is ignored."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"I’ll read `note.txt`.\n"}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'type note.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'type note.txt'","aggregated_output":"hello\r\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"`note.txt` contains “hello”."}}
+{"type":"turn.completed","usage":{"input_tokens":55147,"cached_input_tokens":41088,"cache_write_input_tokens":0,"output_tokens":55,"reasoning_output_tokens":0}}

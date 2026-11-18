@@ -1,3 +1,40 @@
 # Orchestrator
 
-PySide6 desktop app that drives Claude Code and Codex. (WIP)
+Windows desktop app (PySide6 + Fluent widgets) that drives **Claude Code** and **Codex** from one window.
+See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) for engine details.
+
+![Main window](docs/screenshots/m1.png)
+
+## Status: M1 (MVP chat app)
+
+- Projects are folders on disk. Chats live under each project in the left sidebar, with status dots.
+- One pill picks the engine, model and reasoning effort, for example "Codex · GPT-6.2 Sol · medium".
+  You can edit the model list in Settings › Models.
+- Replies stream in with markdown, highlighted code blocks with a copy button, and collapsible tool-call cards.
+  There is also a stop button, and each turn shows its token use.
+- Follow-up messages resume the same engine session: Codex by `thread_id`, Claude by `session_id`.
+- Claude asks before it runs a tool, with Allow / Deny inline in the chat.
+- Data is stored in SQLite at `%APPDATA%\Orchestrator\orchestrator.db`. Tokens are kept only in Windows Credential Manager (keyring).
+
+## Run
+
+```
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python run.py
+```
+
+Engines must be installed and signed in:
+
+- Codex: `npm i -g @openai/codex`, then `codex login`.
+- Claude: run `claude setup-token`, then paste the token in Settings › Accounts or set `CLAUDE_CODE_OAUTH_TOKEN`.
+  The app looks for the token in this order: keyring, the process environment, then `HKCU\Environment`.
+
+## Tests
+
+```
+.venv\Scripts\python -m pytest -q                                   # adapter parsing, storage, markdown
+.venv\Scripts\python scripts\ui_smoke.py --engine codex --rich --shot docs\screenshots\m1.png
+```
+
+`ui_smoke.py` opens the real window and runs a live chat against a throwaway data folder: a new turn, a resume, and a tool turn.
