@@ -51,6 +51,16 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - Settings › Background: keep running in the tray, notifications, and start at login (off by default; uses
   `HKCU\...\Run` → `pythonw run.py --tray`).
 
+## Projects home
+
+![Projects](docs/screenshots/projects-home.png)
+
+- The app opens on **Projects**: Pinned and Other projects in a two-column card grid (one column when the window is narrow).
+  Each card shows the project's icon tile, name and last activity ("1 minute ago", "2 days ago", then "Nov 10").
+- Top right: search, sort (recent activity, name, created) and **New project**. Clicking a card opens that project's chats.
+- Right-click or ⋯ on a card: Pin/Unpin, Rename, Customize icon (icon + color), Open folder, Remove.
+  Pinned state, icon and color are stored in SQLite. Folders found only in engine history stay behind a "Show N folders…" link.
+
 ## Run
 
 ```

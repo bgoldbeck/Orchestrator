@@ -53,6 +53,9 @@ CREATE INDEX IF NOT EXISTS ix_sessions_project ON sessions(project_id, last_acti
 
 MIGRATIONS = [
     ("projects", "auto", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "pinned", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "icon", "TEXT"),
+    ("projects", "color", "TEXT"),
     ("sessions", "file_path", "TEXT"),
     ("sessions", "file_mtime", "REAL"),
     ("sessions", "cwd", "TEXT"),
@@ -65,6 +68,10 @@ class Project:
     name: str
     path: str
     auto: bool = False
+    pinned: bool = False
+    icon: str | None = None
+    color: str | None = None
+    created_at: float = 0.0
 
 
 @dataclass
@@ -161,7 +168,8 @@ class Database:
     # -- projects
     @staticmethod
     def _proj(r: sqlite3.Row) -> Project:
-        return Project(r["id"], r["name"], r["path"], bool(r["auto"]))
+        return Project(r["id"], r["name"], r["path"], bool(r["auto"]), bool(r["pinned"]), r["icon"], r["color"],
+                       r["created_at"])
 
     def projects(self) -> list[Project]:
         return [self._proj(r) for r in self.conn.execute(
@@ -184,6 +192,25 @@ class Database:
     def project(self, pid: int) -> Project | None:
         r = self.conn.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
         return self._proj(r) if r else None
+
+    def update_project(self, pid: int, **fields: Any) -> None:
+        allowed = {k: v for k, v in fields.items() if k in ("name", "pinned", "icon", "color", "auto")}
+        if not allowed:
+            return
+        if "pinned" in allowed:
+            allowed["pinned"] = int(bool(allowed["pinned"]))
+        cols = ", ".join(f"{k}=?" for k in allowed)
+        self.conn.execute(f"UPDATE projects SET {cols} WHERE id=?", (*allowed.values(), pid))
+        self.conn.commit()
+
+    def project_activity(self) -> dict[int, float]:
+        """Last activity per project: newest chat, else when the project was added."""
+        act = {r["id"]: r["created_at"] for r in self.conn.execute("SELECT id, created_at FROM projects")}
+        for r in self.conn.execute("SELECT project_id, MAX(last_active) AS t FROM sessions "
+                                   "WHERE status!='hidden' GROUP BY project_id"):
+            if r["t"]:
+                act[r["project_id"]] = r["t"]
+        return act
 
     def remove_project(self, pid: int) -> None:
         self.conn.execute("DELETE FROM projects WHERE id=?", (pid,))
