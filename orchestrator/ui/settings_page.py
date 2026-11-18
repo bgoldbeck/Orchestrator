@@ -427,6 +427,8 @@ class SettingsPage(SmoothScrollArea):
                                        "ui.notifications", True))
         fbl.addLayout(self._switch_row(fb, "Start at login", "Starts hidden in the tray when you sign in to Windows.",
                                        None, False, getter=self._autostart_get, setter=self._autostart_set))
+        if sys.platform == "win32":
+            fbl.addLayout(self._shortcut_row(fb))
         lay.addWidget(fb)
 
         lay.addSpacing(6)
@@ -459,6 +461,51 @@ class SettingsPage(SmoothScrollArea):
         self._probe = VersionProbe(self)
         self._probe.done.connect(self._on_version)
         self._probe.start()
+
+    def _shortcut_row(self, parent) -> QHBoxLayout:
+        """Desktop / Start menu shortcuts with the app icon and taskbar identity, so pinning works."""
+        from orchestrator.ui.app_icon import shortcut_paths
+
+        row = QHBoxLayout()
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(BodyLabel("Shortcuts", parent))
+        self.shortcutNote = CaptionLabel("", parent)
+        self.shortcutNote.setWordWrap(True)
+        self.shortcutNote.setStyleSheet(f"color:{palette()['muted']};")
+        col.addWidget(self.shortcutNote)
+        row.addLayout(col, 1)
+        self.shortcutBtns = {}
+        for where, text in (("desktop", "Create desktop shortcut"), ("start_menu", "Add to Start menu")):
+            b = PushButton(FIF.LINK, text, parent)
+            b.setObjectName(f"shortcut_{where}")
+            b.setMinimumWidth(b.sizeHint().width())
+            b.clicked.connect(lambda _=False, w=where: self._make_shortcut(w))
+            self.shortcutBtns[where] = b
+            row.addWidget(b)
+        self._shortcut_paths = shortcut_paths()
+        self._update_shortcut_note()
+        return row
+
+    def _update_shortcut_note(self) -> None:
+        have = [n for w, n in (("desktop", "desktop"), ("start_menu", "Start menu"))
+                if self._shortcut_paths[w].exists()]
+        self.shortcutNote.setText(
+            "Opens Orchestrator with its own icon, and pinning to the taskbar keeps working. "
+            + (f"Exists on: {', '.join(have)} (click again to update)." if have else ""))
+
+    def _make_shortcut(self, where: str) -> None:
+        from orchestrator.ui.app_icon import create_shortcut
+
+        try:
+            path = create_shortcut(self._shortcut_paths[where])
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            InfoBar.error("Shortcut not created", str(exc), parent=self.window(), position=InfoBarPosition.TOP_RIGHT,
+                          duration=5000)
+            return
+        self._update_shortcut_note()
+        InfoBar.success("Shortcut created", str(path), parent=self.window(), position=InfoBarPosition.TOP_RIGHT,
+                        duration=3000)
 
     def _switch_row(self, parent, title, sub, key, default, getter=None, setter=None) -> QHBoxLayout:
         row = QHBoxLayout()

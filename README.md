@@ -283,6 +283,24 @@ ends. Reset to defaults puts everything back.
 ![Appearance, defaults](docs/screenshots/appearance-dark.png)
 ![Appearance, light and compact](docs/screenshots/appearance-light.png)
 
+## App icon
+
+The icon is a conductor node fanning out to three agent nodes, on a dark rounded tile in the app's sky accent.
+
+- Source files: `assets/icon.svg`, plus pixel-tuned `assets/icon-small.svg` (20/24 px) and `assets/icon-tiny.svg`
+  (16 px).
+- `scripts/make_icon.py` renders PNGs from 16 to 256 px into `orchestrator/assets/icons/`. It also writes a
+  multi-size `.ico`, which the exe (`orchestrator.spec`) and the installer use. `build.ps1` runs it.
+- The icon is used for the app, every window, the title bar, the tray (with the running-jobs badge) and ordinary
+  notifications.
+- The app sets the Windows AppUserModelID `Orchestrator.App` before any window opens. The taskbar then shows this
+  icon instead of Python's when the app runs from source (`Orchestrator.cmd` / `pythonw`).
+- Settings › Background › Shortcuts: **Create desktop shortcut** and **Add to Start menu** write `.lnk` files with
+  this icon and the same AppUserModelID, so pinning keeps working.
+- When the Start menu shortcut exists, `Orchestrator.cmd` without arguments launches through it.
+
+![App icon at every size](docs/screenshots/app-icon.png)
+
 ## Run
 
 ```

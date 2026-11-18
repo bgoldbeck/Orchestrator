@@ -6,4 +6,11 @@ if not exist ".venv\Scripts\pythonw.exe" (
   pause
   exit /b 1
 )
+rem With no arguments, prefer the Start menu shortcut (Settings > Background): same icon and taskbar identity
+rem as a pinned Orchestrator.
+set "LNK=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Orchestrator.lnk"
+if "%~1"=="" if exist "%LNK%" (
+  start "" "%LNK%"
+  exit /b 0
+)
 start "" ".venv\Scripts\pythonw.exe" "run.py" %*

@@ -97,8 +97,11 @@ class Tray(QObject):
             return
         self._last_sid = sid
         self.notified.append((title, text))
-        icon = {"error": QSystemTrayIcon.Critical, "warning": QSystemTrayIcon.Warning}.get(kind, QSystemTrayIcon.Information)
-        self.tray.showMessage(title, text, icon, 6000)
+        if kind in ("error", "warning"):
+            icon = QSystemTrayIcon.Critical if kind == "error" else QSystemTrayIcon.Warning
+            self.tray.showMessage(title, text, icon, 6000)
+        else:  # our own icon on ordinary toasts
+            self.tray.showMessage(title, text, self.base_icon, 6000)
 
     # ---- events
     def _on_status(self, sid: int, status: str) -> None:

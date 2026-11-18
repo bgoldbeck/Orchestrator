@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Orchestrator app icon: one conductor node fanning out to three agent nodes. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2740"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7dd6ff"/>
+      <stop offset="1" stop-color="#2fa8ec"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#tile)"/>
+  <rect x="9.5" y="9.5" width="237" height="237" rx="54.5" fill="none" stroke="#4cc2ff" stroke-opacity="0.28"
+        stroke-width="3"/>
+  <g fill="none" stroke="url(#accent)" stroke-width="15" stroke-linecap="round">
+    <path d="M128 168 C128 130 72 128 70 92"/>
+    <path d="M128 168 L128 86"/>
+    <path d="M128 168 C128 130 184 128 186 92"/>
+  </g>
+  <g fill="#e8f6ff">
+    <circle cx="70" cy="80" r="21"/>
+    <circle cx="128" cy="72" r="21"/>
+    <circle cx="186" cy="80" r="21"/>
+  </g>
+  <circle cx="128" cy="180" r="33" fill="#4cc2ff"/>
+  <circle cx="128" cy="180" r="13" fill="#0b1220"/>
+</svg>

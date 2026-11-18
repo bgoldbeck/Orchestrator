@@ -23,8 +23,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Source: "..\dist\Orchestrator\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{group}\Orchestrator"; Filename: "{app}\Orchestrator.exe"
-Name: "{userdesktop}\Orchestrator"; Filename: "{app}\Orchestrator.exe"; Tasks: desktopicon
+Name: "{group}\Orchestrator"; Filename: "{app}\Orchestrator.exe"; AppUserModelID: "Orchestrator.App"
+Name: "{userdesktop}\Orchestrator"; Filename: "{app}\Orchestrator.exe"; Tasks: desktopicon; AppUserModelID: "Orchestrator.App"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
