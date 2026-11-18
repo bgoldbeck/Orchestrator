@@ -117,6 +117,9 @@ def main() -> int:
     startup.mark("window_created")
     if guard is not None:
         def second_launch(args: list[str]) -> None:
+            if "--quit" in args:  # `Orchestrator --quit`: quit the running instance
+                win.quit_app(confirm=False)
+                return
             if "--tray" in args:
                 return  # start-at-login while already running: nothing to show
             single.bring_window_to_front(win)
@@ -141,7 +144,38 @@ def main() -> int:
 
     with loop:
         loop.run_until_complete(closing.wait())
+        _exit_watchdog()  # from here on the process must end, even if a worker thread hangs
     return 0
+
+
+def _exit_watchdog(seconds: float | None = None) -> None:
+    """After Quit: if the process is still alive `seconds` later (a stuck worker thread or child), write the
+    thread stacks to <data>/logs/quit-hang.txt and end the process."""
+    import faulthandler
+    import os
+    import threading
+    import time
+
+    limit = float(os.environ.get("ORCHESTRATOR_EXIT_TIMEOUT", seconds or 5))
+
+    def watch() -> None:
+        time.sleep(limit)
+        try:
+            from orchestrator.storage.db import app_dir
+
+            logs = app_dir() / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            with open(logs / "quit-hang.txt", "w", encoding="utf-8") as f:
+                f.write(f"Still running {limit:.0f}s after Quit; threads:\n")
+                for t in threading.enumerate():
+                    f.write(f"- {t.name} daemon={t.daemon}\n")
+                f.flush()
+                faulthandler.dump_traceback(f, all_threads=True)
+        except Exception:  # noqa: BLE001 - never block the exit
+            pass
+        os._exit(0)
+
+    threading.Thread(target=watch, name="exit-watchdog", daemon=True).start()
 
 
 if __name__ == "__main__":

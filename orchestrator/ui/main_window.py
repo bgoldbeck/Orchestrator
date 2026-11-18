@@ -466,14 +466,57 @@ class MainWindow(FluentWindow):
         super().closeEvent(e)
         QApplication.instance().quit()
 
-    def quit_app(self) -> None:
+    def running_turns(self) -> list[int]:
+        """Chats / sub-agents / scheduled runs with a turn in progress."""
+        return [sid for sid in list(self.mgr.live) if self.mgr.is_running(sid)]
+
+    def quit_app(self, confirm: bool = True) -> None:
+        """Quit for real (tray › Quit, `Orchestrator --quit`): asks first when agents are working."""
+        n = len(self.running_turns())
+        if confirm and n:
+            from qfluentwidgets import MessageBox
+
+            word = "task is" if n == 1 else "tasks are"
+            box = MessageBox("Quit Orchestrator?", f"{n} {word} still running. Stop them and quit?", self)
+            box.yesButton.setText("Stop and quit")
+            box.cancelButton.setText("Keep running")
+            if self.isHidden():
+                self.bring_to_front()
+            if not box.exec():
+                return
         self._quitting = True
         self.close()
 
     def _shutdown(self) -> None:
-        if self.om is not None:
-            self.om.bridge.stop()
+        """Everything that could keep the process alive: running turns, child processes, servers, timers."""
+        from orchestrator.core import procs
+
         if self.runner is not None:
             self.runner.shutdown()
+        for sid in self.running_turns():  # ask engines to stop (Codex: ends its subprocess; Claude: interrupt)
+            a = self.mgr._adapters.get(sid)
+            if a is not None:
+                try:
+                    asyncio.ensure_future(a.interrupt())
+                except Exception:  # noqa: BLE001 - quitting anyway
+                    pass
+        for task in list(getattr(self.mgr, "_tasks", {}).values()):
+            if not task.done():
+                task.cancel()
+        try:
+            procs.kill_children()  # claude.exe / codex.exe and the MCP servers they started
+        except Exception:  # noqa: BLE001
+            pass
+        if self.om is not None:
+            self.om.bridge.stop()
+        if self.app_control is not None:
+            self.app_control.bridge.stop()
+        server = getattr(self, "_instance_server", None)
+        if server is not None:
+            server.close()
+        if self.usageBar is not None:
+            self.usageBar._timer.stop()
+        if self.indexer is not None and hasattr(self.indexer, "stop"):
+            self.indexer.stop()
         if self.tray is not None:
             self.tray.hide()
