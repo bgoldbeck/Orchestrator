@@ -19,6 +19,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
+from orchestrator.core.harness_text import clean
 from orchestrator.storage.db import Database, Session, app_dir
 from orchestrator.ui_text import relative
 
@@ -51,7 +52,9 @@ def transcript(db: Database, s: Session, limit: int = 12000) -> str:
     for m in db.messages(s.id):
         if m["kind"] == "text":
             who = "User" if m["role"] == "user" else "Agent"
-            parts.append(f"{who}: {m['text'].strip()}")
+            text = clean(m["text"])
+            if text:
+                parts.append(f"{who}: {text}")
         elif m["kind"] == "tool":
             parts.append(f"[tool {m.get('name', '')}: {m.get('summary', '')}]")
     text = "\n".join(parts)
@@ -62,8 +65,8 @@ def transcript(db: Database, s: Session, limit: int = 12000) -> str:
 
 def heuristic_summary(db: Database, s: Session) -> tuple[str, str]:
     msgs = db.messages(s.id)
-    users = [m["text"] for m in msgs if m["role"] == "user" and m["kind"] == "text"]
-    agents = [m["text"] for m in msgs if m["role"] == "assistant" and m["kind"] == "text"]
+    users = [t for m in msgs if m["role"] == "user" and m["kind"] == "text" and (t := clean(m["text"]))]
+    agents = [t for m in msgs if m["role"] == "assistant" and m["kind"] == "text" and (t := clean(m["text"]))]
     tools = [m.get("summary", "") for m in msgs if m["kind"] == "tool"]
     first = " ".join((users[0] if users else s.title).split())[:200]
     last = " ".join((agents[-1] if agents else "").split())[:240]

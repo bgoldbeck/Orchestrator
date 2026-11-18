@@ -43,7 +43,7 @@ def palette() -> dict[str, str]:
         "code_bg": c("#16181d", "#f6f8fa"),
         "code_head": c("#1f2229", "#eceff3"),
         "inline_code": c("rgba(255,255,255,0.09)", "rgba(0,0,0,0.06)"),
-        "user_bubble": c("#2a2f3a", "#e8eef9"),
+        "user_bubble": c("rgba(255,255,255,0.065)", "rgba(0,0,0,0.045)"),
         "error_bg": c("rgba(248,81,73,0.10)", "rgba(248,81,73,0.08)"),
         "error_border": c("rgba(248,81,73,0.35)", "rgba(248,81,73,0.35)"),
         "warn_bg": c("rgba(245,181,68,0.10)", "rgba(245,181,68,0.12)"),

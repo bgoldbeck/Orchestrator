@@ -22,6 +22,7 @@ from qfluentwidgets import (
     SubtitleLabel,
     TitleLabel,
     ToolButton,
+    TransparentToolButton,
     ToolTipFilter,
     TransparentDropDownPushButton,
 )
@@ -34,6 +35,7 @@ from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database, Session
 from orchestrator.ui.chat_widgets import (
     ApprovalCard,
+    ContextChip,
     AssistantMessage,
     NoticeCard,
     ToolCard,
@@ -77,20 +79,21 @@ class PromptBox(QFrame):
         lay.addWidget(self.edit)
         row = QHBoxLayout()
         row.setSpacing(6)
-        self.hint = CaptionLabel("Enter to send  ·  Shift+Enter for new line", self)
+        self.row = row
+        self.hint = CaptionLabel("Enter to send  ·  Shift+Enter new line", self)
         self.hint.setStyleSheet(f"color:{p['faint']};")
+        self.hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.send = PrimaryToolButton(FIF.SEND, self)
-        self.send.setFixedSize(34, 34)
+        self.send.setFixedSize(32, 32)
         self.send.setToolTip("Send (Enter)")
         self.send.installEventFilter(ToolTipFilter(self.send))
         self.send.clicked.connect(self._on_button)
-        self.later = ToolButton(FIF.DATE_TIME, self)
-        self.later.setFixedSize(34, 34)
+        self.later = TransparentToolButton(FIF.DATE_TIME, self)
+        self.later.setFixedSize(32, 32)
         self.later.setToolTip("Run once, later…")
         self.later.installEventFilter(ToolTipFilter(self.later))
         self.later.clicked.connect(self.runLaterRequested.emit)
-        row.addWidget(self.hint)
-        row.addStretch(1)
+        row.addWidget(self.hint, 1)
         row.addWidget(self.later)
         row.addWidget(self.send)
         lay.addLayout(row)
@@ -137,7 +140,7 @@ class PromptBox(QFrame):
         self._running = running
         self.send.setIcon(FIF.PAUSE_BOLD if running else FIF.SEND)
         self.send.setToolTip("Stop" if running else "Send (Enter)")
-        self.hint.setText("Working…  click ■ to stop" if running else "Enter to send  ·  Shift+Enter for new line")
+        self.hint.setText("Working…  click ■ to stop" if running else "Enter to send  ·  Shift+Enter new line")
 
     def focus(self) -> None:
         self.edit.setFocus()
@@ -152,13 +155,15 @@ class ModelPill(TransparentDropDownPushButton):
         self.engine, self.model, self.effort = "codex", "", ""
         self.engine_locked = False
         self.clicked.connect(self._open)
-        self.setFixedHeight(32)
+        self.setFixedHeight(30)
+        self.setToolTip("Engine · model · reasoning effort for the next message")
+        self.installEventFilter(ToolTipFilter(self))
 
     def set_value(self, engine: str, model: str, effort: str, locked: bool) -> None:
         self.engine, self.model, self.effort, self.engine_locked = engine, model, effort, locked
         label = model_registry.label(self.db, engine, model)
         ok = model_registry.is_allowed(self.db, engine, model)
-        self.setText(f"{ENGINES.get(engine, engine)}  ·  {label}{'' if ok else ' (disabled)'}  ·  {effort or 'default'}")
+        self.setText(f"{ENGINES.get(engine, engine)} · {label}{'' if ok else ' (disabled)'} · {effort or 'default'}")
 
     def _open(self) -> None:
         menu = self.build_menu()
@@ -273,7 +278,7 @@ class ChatView(QWidget):
         self.header.setObjectName("chatHeader")
         self.header.setStyleSheet(f"#chatHeader {{ border-bottom:1px solid {palette()['border']}; }}")
         hl = QHBoxLayout(self.header)
-        hl.setContentsMargins(24, 10, 16, 10)
+        hl.setContentsMargins(24, 8, 16, 8)
         tl = QVBoxLayout()
         tl.setSpacing(0)
         self.title = SubtitleLabel("", self.header)
@@ -292,9 +297,6 @@ class ChatView(QWidget):
         self.diffBtn.installEventFilter(ToolTipFilter(self.diffBtn))
         self.diffBtn.clicked.connect(self.show_diff)
         hl.addWidget(self.diffBtn)
-        self.pill = ModelPill(db, self.header)
-        self.pill.changed.connect(self._on_model_changed)
-        hl.addWidget(self.pill)
         root.addWidget(self.header)
 
         # stream
@@ -305,12 +307,12 @@ class ChatView(QWidget):
         holder = QWidget()
         holder.setStyleSheet("background:transparent;")
         hh = QHBoxLayout(holder)
-        hh.setContentsMargins(24, 20, 24, 20)
+        hh.setContentsMargins(24, 16, 24, 16)
         self.column = QWidget(holder)
         self.column.setMaximumWidth(CONTENT_MAX)
         self.stream = QVBoxLayout(self.column)
         self.stream.setContentsMargins(0, 0, 0, 0)
-        self.stream.setSpacing(12)
+        self.stream.setSpacing(10)
         self.stream.addStretch(1)
         hh.addStretch(1)
         hh.addWidget(self.column, 100)
@@ -335,6 +337,9 @@ class ChatView(QWidget):
         pl.addWidget(self.prompt, 100)
         pl.addStretch(1)
         self.prompt.submitted.connect(self._send)
+        self.pill = ModelPill(db, self.prompt)
+        self.pill.changed.connect(self._on_model_changed)
+        self.prompt.row.insertWidget(0, self.pill)
         self.model_warn = CaptionLabel("", pw)
         self.model_warn.setObjectName("modelWarning")
         self.model_warn.setWordWrap(True)
@@ -394,7 +399,7 @@ class ChatView(QWidget):
             self.scroll.hide()
             self.empty.show()
             self.empty.show_state(FIF.ROBOT, f"New chat in {proj.name if proj else 'project'}",
-                                  "Messages run in this project folder. Pick the engine, model and effort in the top right.")
+                                  "Messages run in this project folder. Pick the engine, model and effort next to Send.")
         else:
             self.empty.hide()
             self.scroll.show()
@@ -408,7 +413,7 @@ class ChatView(QWidget):
             self.empty.hide()
             self.scroll.show()
             for call in self.mgr.live_tools(s.id):
-                card = ToolCard(call.name, call.summary)
+                card = ToolCard(call.name, self._rel(call.summary))
                 self._tools[call.id] = card
                 self._add(card, False)
             live = self.mgr.live_text(s.id)
@@ -439,6 +444,17 @@ class ChatView(QWidget):
         if animate:
             fade_in(w)
 
+    def _rel(self, summary: str) -> str:
+        """Tool summaries with the chat's own folder left out (paths read relative to the project)."""
+        folder = self.chat_folder() if self.session else ""
+        if not folder or not summary:
+            return summary
+        out = summary
+        for f in {folder, folder.replace("\\", "/"), folder.replace("/", "\\")}:
+            for sep in ("/", "\\"):
+                out = out.replace(f.rstrip("/\\") + sep, "")
+        return out
+
     def _engine_label(self) -> str:
         return ENGINES.get(self.session.engine, "") if self.session else ""
 
@@ -464,12 +480,14 @@ class ChatView(QWidget):
             elif k == "text":
                 self._add(AssistantMessage(self.session.engine, self._engine_label(), m["text"]), False)
             elif k == "tool":
-                card = ToolCard(m.get("name", ""), m.get("summary", ""))
+                card = ToolCard(m.get("name", ""), self._rel(m.get("summary", "")))
                 card.set_result(m.get("output", ""), m.get("is_error", False))
                 self._add(card, False)
             elif k == "error":
                 kind = m.get("level") or ("warning" if not m.get("fatal", True) else "error")
                 self._add(self._notice(m["text"], kind), False)
+            elif k == "context":
+                self._add(ContextChip(m.get("tags") or []), False)
             elif k == "usage":
                 self._add(UsageLine(m.get("input", 0), m.get("output", 0), m.get("cached", 0), m.get("cost")), False)
 
@@ -605,7 +623,7 @@ class ChatView(QWidget):
             if ev.id in self._tools:
                 return
             self._hide_dots()
-            card = ToolCard(ev.name, ev.summary)
+            card = ToolCard(ev.name, self._rel(ev.summary))
             self._tools[ev.id] = card
             self._add(card)
             self._show_dots()
