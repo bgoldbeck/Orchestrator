@@ -61,6 +61,36 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - Right-click or ⋯ on a card: Pin/Unpin, Rename, Customize icon (icon + color), Open folder, Remove.
   Pinned state, icon and color are stored in SQLite. Folders found only in engine history stay behind a "Show N folders…" link.
 
+## M4: orchestrator
+
+![Orchestrate](docs/screenshots/m4.png)
+
+- **Orchestrate** page: pick a project, write a goal, choose the planner's engine/model/effort (Claude or Codex)
+  and max parallel sub-agents (default 4), then Start. The planner is an ordinary chat that splits the goal into
+  tasks and runs sub-agents, which can be Claude or Codex, any enabled model.
+- The planner's tools come from a local stdio MCP server, `python -m orchestrator.mcp_server`, which the engine starts.
+  It forwards each call over a 127.0.0.1 socket with a per-run secret to the app, which owns the tasks:
+  - `delegate(instructions, engine?, model?, effort?, title?, cwd?, resume_session_id?)` returns a task id right away.
+    Disabled or unknown models are refused with a clear error.
+  - `task_status(task_id?)` returns one task or all of them.
+  - `wait_for(task_ids, timeout)` blocks for up to 4 minutes per call, under the 10-minute tool timeout. If tasks are
+    still running, it returns `done: false` with `pending` ids, and the planner calls it again.
+  - `send_to_task(task_id, text)` sends a follow-up in the same sub-agent chat.
+  - Claude gets the server through the Agent SDK `mcp_servers` option. Codex gets it through `-c mcp_servers.orchestrator.*`
+    overrides, with `default_tools_approval_mode='approve'`. Both are tested end to end (`scripts/e2e_m4.py claude|codex`).
+- Each sub-agent's prompt ends with a closing instruction to write a ```` ```report ```` block (status, summary,
+  files changed, open questions). The app parses the block, adds any edited files it saw in tool calls, and returns
+  the result to the planner as the `wait_for` result. If the report is missing, the result is built from the last reply.
+- Live board: one card per sub-agent, showing engine badge, model and effort, status (queued / running /
+  waiting on you / done / failed / stopped), elapsed time and last output line, plus Open chat, Stop and Retry buttons.
+  Stop all ends the planner and every task.
+  When a sub-agent asks for approval, its card shows Allow/Deny and the tray notifies you.
+- Sub-agents run in the project folder (Claude in accept-edits mode, Codex in workspace-write). Their chats appear
+  in the sidebar nested under the planner chat.
+- **Git worktree per task** (off by default): when two sub-agents would write in the same git repo at once, the
+  later one gets its own worktree under `%APPDATA%\Orchestrator\worktrees` on branch `orchestrator/task-N`.
+  Its report includes the path and branch.
+
 ## Run
 
 ```

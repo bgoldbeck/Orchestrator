@@ -31,7 +31,7 @@ class ChatsPage(QWidget):
 
 class MainWindow(FluentWindow):
     def __init__(self, db: Database, mgr: SessionManager, icon: QIcon | None = None, indexer=None,
-                 runner=None) -> None:
+                 runner=None, orchestrations=None) -> None:
         super().__init__()
         self.db = db
         self.mgr = mgr
@@ -49,6 +49,14 @@ class MainWindow(FluentWindow):
         self.settings = SettingsPage(db, self)
         self.addSubInterface(self.projects, FIF.HOME, "Projects")
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
+        from orchestrator.core.orchestration import OrchestrationManager
+        from orchestrator.ui.orchestrate_page import OrchestratePage
+
+        self.om = orchestrations or OrchestrationManager(db, mgr, self)
+        self.orchestrate = OrchestratePage(db, mgr, self.om, self)
+        self.addSubInterface(self.orchestrate, FIF.ROBOT, "Orchestrate")
+        self.orchestrate.openChat.connect(self.open_session)
+        self.om.changed.connect(lambda _o: self.chats.sidebar.reload_soon())
         self.projects.openProject.connect(self.open_project)
         self.projects.projectsChanged.connect(self.chats.sidebar.reload)
         self.runner = runner
@@ -105,6 +113,8 @@ class MainWindow(FluentWindow):
     def _on_page(self, _i: int) -> None:
         if self.stackedWidget.currentWidget() is self.projects:
             self.projects.reload()
+        if self.stackedWidget.currentWidget() is self.orchestrate:
+            self.orchestrate.reload()
         if self.stackedWidget.currentWidget() is self.settings:
             self.settings.refresh()
         elif self.schedules is not None and self.stackedWidget.currentWidget() is self.schedules:
@@ -144,6 +154,7 @@ class MainWindow(FluentWindow):
         self.close()
 
     def _shutdown(self) -> None:
+        self.om.bridge.stop()
         if self.runner is not None:
             self.runner.shutdown()
         if self.tray is not None:

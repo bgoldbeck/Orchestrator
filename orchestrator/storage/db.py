@@ -45,6 +45,18 @@ CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
   session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL, status TEXT NOT NULL,
   started_at REAL NOT NULL, finished_at REAL, note TEXT);
+CREATE TABLE IF NOT EXISTS orchestrations(
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL, goal TEXT NOT NULL,
+  engine TEXT NOT NULL, model TEXT, effort TEXT, max_parallel INTEGER NOT NULL DEFAULT 4,
+  status TEXT NOT NULL DEFAULT 'running', created_at REAL NOT NULL, finished_at REAL);
+CREATE TABLE IF NOT EXISTS tasks(
+  id INTEGER PRIMARY KEY, orchestration_id INTEGER NOT NULL REFERENCES orchestrations(id) ON DELETE CASCADE,
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL, engine TEXT NOT NULL, model TEXT, effort TEXT,
+  title TEXT NOT NULL, instructions TEXT NOT NULL, cwd TEXT, worktree TEXT,
+  status TEXT NOT NULL DEFAULT 'queued', result_json TEXT, created_at REAL NOT NULL,
+  started_at REAL, finished_at REAL);
+CREATE INDEX IF NOT EXISTS ix_tasks_orch ON tasks(orchestration_id, id);
 CREATE INDEX IF NOT EXISTS ix_runs_schedule ON runs(schedule_id, started_at);
 CREATE INDEX IF NOT EXISTS ix_messages_session ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_sessions_project ON sessions(project_id, last_active);
@@ -60,6 +72,7 @@ MIGRATIONS = [
     ("sessions", "file_mtime", "REAL"),
     ("sessions", "cwd", "TEXT"),
     ("models", "enabled", "INTEGER NOT NULL DEFAULT 1"),
+    ("sessions", "parent_id", "INTEGER"),  # sub-agent chats nest under their orchestrator chat
 ]
 
 
@@ -89,6 +102,7 @@ class Session:
     source: str = "app"
     file_path: str | None = None
     cwd: str | None = None
+    parent_id: int | None = None
 
 
 SCHEDULE_FIELDS = ("name", "project_id", "prompt", "engine", "model", "effort", "kind", "cron", "run_at",
@@ -126,6 +140,40 @@ class Run:
 
 
 @dataclass
+class Orchestration:
+    id: int
+    project_id: int
+    session_id: int | None
+    goal: str
+    engine: str
+    model: str | None
+    effort: str | None
+    max_parallel: int
+    status: str  # running | done | error | stopped
+    created_at: float
+    finished_at: float | None
+
+
+@dataclass
+class Task:
+    id: int
+    orchestration_id: int
+    session_id: int | None
+    engine: str
+    model: str | None
+    effort: str | None
+    title: str
+    instructions: str
+    cwd: str | None
+    worktree: str | None
+    status: str  # queued | running | waiting | done | failed | stopped
+    result: dict | None
+    created_at: float
+    started_at: float | None
+    finished_at: float | None
+
+
+@dataclass
 class Model:
     engine: str
     id: str
@@ -154,6 +202,9 @@ class Database:
         self.conn.execute("UPDATE sessions SET status='idle' WHERE status IN ('running','waiting')")
         self.conn.execute("UPDATE runs SET status='error', note='app closed during run', finished_at=started_at "
                           "WHERE status='running'")
+        self.conn.execute("UPDATE tasks SET status='stopped', finished_at=COALESCE(finished_at, created_at) "
+                          "WHERE status IN ('queued','running','waiting')")
+        self.conn.execute("UPDATE orchestrations SET status='stopped' WHERE status='running'")
         self.conn.execute("DELETE FROM projects WHERE auto=1 AND id NOT IN (SELECT project_id FROM sessions)")
         self.conn.commit()
 
@@ -222,7 +273,8 @@ class Database:
     @staticmethod
     def _sess(r: sqlite3.Row) -> Session:
         return Session(r["id"], r["project_id"], r["engine"], r["engine_session_id"], r["title"],
-                       r["model"], r["effort"], r["status"], r["last_active"], r["source"], r["file_path"], r["cwd"])
+                       r["model"], r["effort"], r["status"], r["last_active"], r["source"], r["file_path"], r["cwd"],
+                       r["parent_id"])
 
     def sessions(self, project_id: int) -> list[Session]:
         return [self._sess(r) for r in self.conn.execute(
@@ -232,10 +284,12 @@ class Database:
         r = self.conn.execute("SELECT * FROM sessions WHERE id=?", (sid,)).fetchone()
         return self._sess(r) if r else None
 
-    def create_session(self, project_id: int, engine: str, model: str, effort: str) -> Session:
+    def create_session(self, project_id: int, engine: str, model: str, effort: str,
+                       parent_id: int | None = None, title: str | None = None, cwd: str | None = None) -> Session:
         cur = self.conn.execute(
-            "INSERT INTO sessions(project_id,engine,model,effort,last_active) VALUES(?,?,?,?,?)",
-            (project_id, engine, model, effort, time.time()))
+            "INSERT INTO sessions(project_id,engine,model,effort,last_active,parent_id,title,cwd) "
+            "VALUES(?,?,?,?,?,?,COALESCE(?, 'New chat'),?)",
+            (project_id, engine, model, effort, time.time(), parent_id, title, cwd))
         self.conn.commit()
         return self.session(cur.lastrowid)  # type: ignore[return-value]
 
@@ -360,6 +414,73 @@ class Database:
 
     def running_runs(self) -> list[Run]:
         return [self._run(r) for r in self.conn.execute("SELECT * FROM runs WHERE status='running'")]
+
+    # -- orchestrations
+    @staticmethod
+    def _orch(r: sqlite3.Row) -> Orchestration:
+        return Orchestration(r["id"], r["project_id"], r["session_id"], r["goal"], r["engine"], r["model"], r["effort"],
+                             r["max_parallel"], r["status"], r["created_at"], r["finished_at"])
+
+    def add_orchestration(self, project_id: int, goal: str, engine: str, model: str, effort: str,
+                          max_parallel: int = 4) -> Orchestration:
+        cur = self.conn.execute(
+            "INSERT INTO orchestrations(project_id,goal,engine,model,effort,max_parallel,created_at) VALUES(?,?,?,?,?,?,?)",
+            (project_id, goal, engine, model, effort, max_parallel, time.time()))
+        self.conn.commit()
+        return self.orchestration(cur.lastrowid)  # type: ignore[return-value]
+
+    def orchestration(self, oid: int) -> Orchestration | None:
+        r = self.conn.execute("SELECT * FROM orchestrations WHERE id=?", (oid,)).fetchone()
+        return self._orch(r) if r else None
+
+    def orchestrations(self, project_id: int | None = None) -> list[Orchestration]:
+        q = "SELECT * FROM orchestrations" + (" WHERE project_id=?" if project_id else "") + " ORDER BY id DESC"
+        return [self._orch(r) for r in self.conn.execute(q, (project_id,) if project_id else ())]
+
+    def orchestration_for_session(self, sid: int) -> Orchestration | None:
+        r = self.conn.execute("SELECT * FROM orchestrations WHERE session_id=?", (sid,)).fetchone()
+        return self._orch(r) if r else None
+
+    def update_orchestration(self, oid: int, **fields: Any) -> None:
+        if fields:
+            cols = ", ".join(f"{k}=?" for k in fields)
+            self.conn.execute(f"UPDATE orchestrations SET {cols} WHERE id=?", (*fields.values(), oid))
+            self.conn.commit()
+
+    @staticmethod
+    def _task(r: sqlite3.Row) -> Task:
+        return Task(r["id"], r["orchestration_id"], r["session_id"], r["engine"], r["model"], r["effort"], r["title"],
+                    r["instructions"], r["cwd"], r["worktree"], r["status"],
+                    json.loads(r["result_json"]) if r["result_json"] else None,
+                    r["created_at"], r["started_at"], r["finished_at"])
+
+    def add_task(self, oid: int, engine: str, model: str, effort: str, title: str, instructions: str,
+                 cwd: str | None = None) -> Task:
+        cur = self.conn.execute(
+            "INSERT INTO tasks(orchestration_id,engine,model,effort,title,instructions,cwd,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (oid, engine, model, effort, title, instructions, cwd, time.time()))
+        self.conn.commit()
+        return self.task(cur.lastrowid)  # type: ignore[return-value]
+
+    def task(self, tid: int) -> Task | None:
+        r = self.conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+        return self._task(r) if r else None
+
+    def tasks(self, oid: int) -> list[Task]:
+        return [self._task(r) for r in self.conn.execute("SELECT * FROM tasks WHERE orchestration_id=? ORDER BY id", (oid,))]
+
+    def task_for_session(self, sid: int) -> Task | None:
+        r = self.conn.execute("SELECT * FROM tasks WHERE session_id=? ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+        return self._task(r) if r else None
+
+    def update_task(self, tid: int, **fields: Any) -> None:
+        if "result" in fields:
+            res = fields.pop("result")
+            fields["result_json"] = json.dumps(res) if res is not None else None
+        if fields:
+            cols = ", ".join(f"{k}=?" for k in fields)
+            self.conn.execute(f"UPDATE tasks SET {cols} WHERE id=?", (*fields.values(), tid))
+            self.conn.commit()
 
     # -- models
     def models(self, engine: str | None = None) -> list[Model]:

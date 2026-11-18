@@ -176,9 +176,17 @@ class Sidebar(QFrame):
         self.reload()
 
     # ---- data
+    def reload_soon(self) -> None:
+        if not hasattr(self, "_reload_timer"):
+            self._reload_timer = QTimer(self)
+            self._reload_timer.setSingleShot(True)
+            self._reload_timer.timeout.connect(self.reload)
+        self._reload_timer.start(150)
+
     def reload(self) -> None:
         expanded = {self.tree.topLevelItem(i).data(0, ROLE_ID) for i in range(self.tree.topLevelItemCount())
                     if self.tree.topLevelItem(i).isExpanded()}
+        expanded_sessions = {it.data(0, ROLE_ID) for it in self._session_items() if it.isExpanded()}
         first = self.tree.topLevelItemCount() == 0
         scroll = self.tree.verticalScrollBar().value()
         self.tree.clear()
@@ -197,18 +205,57 @@ class Sidebar(QFrame):
             pi.setData(0, ROLE_ID, proj.id)
             pi.setToolTip(0, proj.path)
             self.tree.addTopLevelItem(pi)
-            for sess in self.db.sessions(proj.id):
-                ci = QTreeWidgetItem([sess.title])
-                ci.setData(0, ROLE_KIND, "session")
-                ci.setData(0, ROLE_ID, sess.id)
-                self._decorate(ci, sess)
+            sessions = self.db.sessions(proj.id)
+            ids = {s.id for s in sessions}
+            kids: dict[int, list] = {}
+            for sess in sessions:  # sub-agent chats nest under their orchestrator chat
+                if sess.parent_id and sess.parent_id in ids:
+                    kids.setdefault(sess.parent_id, []).append(sess)
+            for sess in sessions:
+                if sess.parent_id and sess.parent_id in ids:
+                    continue
+                ci = self._session_item(sess)
                 pi.addChild(ci)
-                if sess.id == self.current_sid:
-                    self.tree.setCurrentItem(ci)
-            pi.setExpanded((first and not proj.auto) or proj.id in expanded or any(
-                pi.child(i).data(0, ROLE_ID) == self.current_sid for i in range(pi.childCount())))
+                for sub in sorted(kids.get(sess.id, []), key=lambda x: x.id):
+                    ci.addChild(self._session_item(sub))
+                ci.setExpanded(sess.id in expanded_sessions or any(
+                    ci.child(i).data(0, ROLE_ID) == self.current_sid for i in range(ci.childCount())))
+            pi.setExpanded((first and not proj.auto) or proj.id in expanded or self._contains(pi, self.current_sid))
         self._filter(self.search.text())
         self.tree.verticalScrollBar().setValue(scroll)
+
+    def _session_item(self, sess) -> QTreeWidgetItem:
+        ci = QTreeWidgetItem([sess.title])
+        ci.setData(0, ROLE_KIND, "session")
+        ci.setData(0, ROLE_ID, sess.id)
+        self._decorate(ci, sess)
+        if sess.id == self.current_sid:
+            self.tree.setCurrentItem(ci)
+        return ci
+
+    def _session_items(self) -> list[QTreeWidgetItem]:
+        out: list[QTreeWidgetItem] = []
+
+        def walk(it: QTreeWidgetItem) -> None:
+            for j in range(it.childCount()):
+                ch = it.child(j)
+                if ch.data(0, ROLE_KIND) == "session":
+                    out.append(ch)
+                walk(ch)
+
+        for i in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(i))
+        return out
+
+    @staticmethod
+    def _contains(item: QTreeWidgetItem, sid: int | None) -> bool:
+        for j in range(item.childCount()):
+            ch = item.child(j)
+            if ch.data(0, ROLE_ID) == sid and ch.data(0, ROLE_KIND) == "session":
+                return True
+            if Sidebar._contains(ch, sid):
+                return True
+        return False
 
     def _decorate(self, item: QTreeWidgetItem, s) -> None:
         if isinstance(s, int):
@@ -230,18 +277,11 @@ class Sidebar(QFrame):
             self.tree.viewport().update()
 
     def _refresh_ages(self) -> None:
-        for i in range(self.tree.topLevelItemCount()):
-            pi = self.tree.topLevelItem(i)
-            for j in range(pi.childCount()):
-                self._decorate(pi.child(j), pi.child(j).data(0, ROLE_ID))
+        for it in self._session_items():
+            self._decorate(it, it.data(0, ROLE_ID))
 
     def _find(self, sid: int) -> QTreeWidgetItem | None:
-        for i in range(self.tree.topLevelItemCount()):
-            pi = self.tree.topLevelItem(i)
-            for j in range(pi.childCount()):
-                if pi.child(j).data(0, ROLE_ID) == sid:
-                    return pi.child(j)
-        return None
+        return next((it for it in self._session_items() if it.data(0, ROLE_ID) == sid), None)
 
     def _refresh_item(self, sid: int) -> None:
         item = self._find(sid)
@@ -260,7 +300,7 @@ class Sidebar(QFrame):
                 continue
             for j in range(pi.childCount()):
                 ch = pi.child(j)
-                vis = not t or t in ch.text(0).lower()
+                vis = not t or t in ch.text(0).lower() or any(t in ch.child(k).text(0).lower() for k in range(ch.childCount()))
                 ch.setHidden(not vis)
                 any_vis |= vis
             pi.setHidden(bool(t) and not any_vis and t not in pi.text(0).lower())
@@ -271,7 +311,7 @@ class Sidebar(QFrame):
     def selected_project_id(self) -> int | None:
         item = self.tree.currentItem()
         if item:
-            if item.data(0, ROLE_KIND) == "session":
+            while item.parent() is not None and item.data(0, ROLE_KIND) == "session":
                 item = item.parent()
             return item.data(0, ROLE_ID)
         projects = self.db.projects()
@@ -306,7 +346,9 @@ class Sidebar(QFrame):
         prev = self.current_sid
         self.current_sid = sid
         # Drop an untouched empty chat when leaving it.
-        if prev and prev != sid and not self.db.messages(prev) and not self.mgr.is_running(prev):
+        prev_s = self.db.session(prev) if prev and prev != sid else None
+        if (prev_s and not prev_s.parent_id and not self.db.messages(prev) and not self.mgr.is_running(prev)
+                and not self.db.task_for_session(prev)):
             self.db.delete_session(prev)
         self.reload()
         item = self._find(sid) if sid else None

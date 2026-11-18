@@ -101,11 +101,10 @@ class ScheduleCard(QFrame):
         meta.setContentsMargins(36, 2, 0, 0)
         meta.setSpacing(8)
         if not model_registry.is_allowed(db, s.engine, s.model or "", strict=True):
-            warn = chip("Model disabled", self)
+            warn = chip("⚠ Model disabled", self, STATUS_COLORS["waiting"])
             warn.setObjectName("modelDisabledChip")
             warn.setToolTip(model_registry.disabled_message(db, s.engine, s.model or "") +
                             " Runs are skipped until you edit this schedule.")
-            warn.setStyleSheet(warn.styleSheet() + "color:#f59e0b; border-color:#f59e0b;")
             meta.addWidget(warn)
         meta.addWidget(chip(describe(s), self))
         meta.addWidget(chip(f"Permissions: {POLICIES.get(s.permission, {}).get('label', s.permission)}", self))
