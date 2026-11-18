@@ -353,6 +353,44 @@ class SettingsPage(SmoothScrollArea):
         lay.addWidget(f)
 
         lay.addSpacing(6)
+        lay.addWidget(SubtitleLabel("Orchestrator", body))
+        from orchestrator.core.orchestration import CONFIRM_MODES
+        from orchestrator.core.routing import DEFAULT_GUIDE
+        from orchestrator.core.summaries import MODES
+
+        fo, fol = card(body)
+        fol.addLayout(self._keyed_row(fo, "Reuse and model picks", "When the planner wants to continue an earlier "
+                                      "chat (or, with Always ask, for every automatic model pick).",
+                                      "orchestrate.confirm", CONFIRM_MODES, "countdown"))
+        fol.addLayout(self._switch_row(fo, "Retry failed automatic picks once",
+                                       "More effort first, then the next stronger enabled model.",
+                                       "orchestrate.escalate", True))
+        fol.addLayout(self._keyed_row(fo, "Session summaries", "Written when a chat goes idle; used to find chats "
+                                      "to reuse. Cheap model = the last enabled model in the list above.",
+                                      "summaries.mode", MODES, "model"))
+        gl = BodyLabel("Routing guide", fo)
+        fol.addWidget(gl)
+        gs = CaptionLabel("Shown to the planner when it picks engine, model and effort. Edit freely.", fo)
+        gs.setStyleSheet(f"color:{palette()['muted']};")
+        fol.addWidget(gs)
+        from qfluentwidgets import PlainTextEdit
+
+        self.guide = PlainTextEdit(fo)
+        self.guide.setPlainText(db.get_setting("routing.guide") or DEFAULT_GUIDE)
+        self.guide.setFixedHeight(120)
+        fol.addWidget(self.guide)
+        grow = QHBoxLayout()
+        gsave = PushButton(FIF.SAVE, "Save guide", fo)
+        greset = PushButton(FIF.SYNC, "Reset", fo)
+        gsave.clicked.connect(lambda: db.set_setting("routing.guide", self.guide.toPlainText().strip() or None))
+        greset.clicked.connect(lambda: (db.set_setting("routing.guide", None), self.guide.setPlainText(DEFAULT_GUIDE)))
+        grow.addStretch(1)
+        grow.addWidget(greset)
+        grow.addWidget(gsave)
+        fol.addLayout(grow)
+        lay.addWidget(fo)
+
+        lay.addSpacing(6)
         lay.addWidget(SubtitleLabel("Background", body))
         fb, fbl = card(body)
         fbl.addLayout(self._switch_row(fb, "Keep running in the tray when the window is closed",
@@ -450,6 +488,26 @@ class SettingsPage(SmoothScrollArea):
                 on_change(v)
 
         cb.currentTextChanged.connect(changed)
+        row.addLayout(col, 1)
+        row.addWidget(cb)
+        return row
+
+    def _keyed_row(self, parent, title, sub, key, mapping: dict[str, str], default: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(BodyLabel(title, parent))
+        if sub:
+            s = CaptionLabel(sub, parent)
+            s.setWordWrap(True)
+            s.setStyleSheet(f"color:{palette()['muted']};")
+            col.addWidget(s)
+        cb = ComboBox(parent)
+        for k, label in mapping.items():
+            cb.addItem(label, userData=k)
+        cb.setCurrentIndex(max(0, cb.findData(self.db.get_setting(key, default))))
+        cb.setMinimumWidth(240)
+        cb.currentIndexChanged.connect(lambda _i: self.db.set_setting(key, cb.currentData()))
         row.addLayout(col, 1)
         row.addWidget(cb)
         return row

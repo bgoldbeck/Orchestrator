@@ -121,3 +121,39 @@ def test_sidebar_nests_subagent_chats(env, qapp):
     sb.current_sid = sid
     sb.select(None)
     assert db.session(sid) is not None
+
+
+def test_reuse_card_question_box_and_auto_planner(env, qapp):
+    from qfluentwidgets import PillPushButton, PrimaryPushButton
+
+    from orchestrator.ui.orchestrate_page import OrchestratePage
+
+    db, proj, mgr, om, loop = env
+    db.set_setting("orchestrate.confirm", "always_ask")
+    old = db.create_session(proj.id, "claude", "claude-sonnet-5-5", "medium", title="Fix login bug")
+    db.add_message(old.id, "user", "text", {"text": "login"})
+    page = OrchestratePage(db, mgr, om)
+    page.resize(1200, 900)
+    page.autoPlanner.setChecked(True)
+    assert not page.pill.isEnabled()
+    page.goal.setPlainText("Investigate the flaky login test")
+    page._start()
+    o = db.orchestrations(proj.id)[0]
+    assert o.engine == "claude" and o.pick_reason.startswith("Auto planner")
+    tid = om.delegate(o.id, "login again", resume_session_id=f"s:{old.id}")["task_id"]
+    page.render_board()
+    flush(qapp)
+    card = page.cards[tid]
+    assert card.proposal is not None and "Fix login bug" in card.proposalText.text()
+    use = next(b for b in card.proposal.findChildren(PrimaryPushButton) if b.text() == "Use it")
+    use.click()
+    assert db.task(tid).reused and db.task(tid).session_id == old.id
+    # planner question shows with option buttons; clicking one answers it
+    q = db.add_question(o.id, "Ship it?", ["yes", "no"])
+    page._q_shown = ()
+    page._render_planner(db.orchestration(o.id))
+    flush(qapp)
+    yes = next(b for b in page.questions.findChildren(PillPushButton) if b.text() == "yes")
+    yes.click()
+    assert db.question(q.id).answer == "yes"
+    page.autoPlanner.setChecked(False)

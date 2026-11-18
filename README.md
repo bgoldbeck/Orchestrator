@@ -91,6 +91,35 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   later one gets its own worktree under `%APPDATA%\Orchestrator\worktrees` on branch `orchestrator/task-N`.
   Its report includes the path and branch.
 
+## M5: reuse and auto routing
+
+![Reuse and routing](docs/screenshots/m5.png)
+
+- **Session summaries:** when a chat goes idle, the cheapest enabled model (Haiku, Luna, and so on) writes a 3 to 5 line
+  summary plus keywords. The call is one-shot, runs in the app's scratch folder and never appears as a chat.
+  Settings › Orchestrator › Session summaries can switch this to a quick heuristic (no model) or off.
+- **`find_sessions(query)`** ranks earlier chats from both engines by keyword match (title > keywords > summary),
+  same project and recency, and explains each match ("matches 'login'; same project; 2 days ago").
+- **Reuse card:** when the planner passes `resume_session_id` (a `session_ref` like `s:12`) to `delegate`, the
+  task card shows "Will continue *Fix login bug* (Codex, 2 days ago)" with **Use it**, **Start fresh** and
+  **Pick another** (choose from the other matches). By default it accepts after a 10 s countdown; Settings can
+  make it always ask or never ask. A reused chat keeps its engine and gets only the new task, without the intro.
+- **Auto model and effort:** if the planner leaves engine, model and effort empty, the app picks them from
+  enabled models only. Hard tasks (debugging, architecture) go to the strongest Claude model on high, large
+  coding jobs to Codex on high, and small tasks to the cheapest model on low. Each card shows its reason,
+  e.g. "Auto: Haiku 5.5 · low — small task (readme)". Planners that choose for themselves follow the editable
+  routing guide (Settings › Orchestrator) and pass `reason`. A queued card has a model picker to change the
+  choice before it starts. With "Always ask", every automatic pick waits for your OK.
+- **Auto planner:** tick **Auto** next to the planner picker and the app picks the planner's engine and strength
+  from the goal. The pick and its reason show at the top of the board.
+- **Escalate once:** if a task on an automatic pick fails, the app retries it once in the same chat, first with more
+  effort and then with the next stronger enabled model. The card shows "Escalated after failure: …".
+- **`ask_user(question, options)`:** the question appears on the board with option buttons and an answer box, and
+  the tray notifies you. Each call waits up to 4 minutes; if there is no answer yet, the planner calls again with
+  the `question_id`.
+- `send_to_task(task_id, text)` sends a follow-up to a finished sub-agent in the same chat.
+- Real end-to-end check with both planners: `scripts/e2e_m5.py claude|codex`.
+
 ## Run
 
 ```

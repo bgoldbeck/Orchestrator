@@ -59,20 +59,47 @@ def build_server():
     )
 
     @server.tool()
+    async def find_sessions(query: str, project: str = "") -> str:
+        """Search earlier chats (Claude and Codex) by their summaries. Call this before delegating:
+        if a past session already worked on the same thing, continuing it saves time.
+
+        Returns up to 5 candidates with session_ref, title, engine, summary, age and why it matched.
+        project: optional project name; empty = rank this project first, then the others.
+        """
+        return _dump(await bridge_call("find_sessions", {"query": query, "project": project}, timeout=30))
+
+    @server.tool()
     async def delegate(instructions: str, engine: str = "", model: str = "", effort: str = "",
-                       title: str = "", cwd: str = "", resume_session_id: str = "") -> str:
+                       title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "") -> str:
         """Start a sub-agent on a task. Returns a task_id right away; the task runs in the background.
 
         instructions: everything the sub-agent needs; it does not see this conversation.
-        engine: "claude" or "codex" (empty = the project's default).
-        model / effort: optional, e.g. model "sonnet", effort "low"; empty = defaults for that engine.
+        engine / model / effort: leave empty to let the app pick from the enabled models (Auto, with a reason),
+          or set them yourself following the routing guide and say why in `reason`.
         title: short label for the task card (a few words).
         cwd: optional sub-folder of the project to work in.
-        resume_session_id: an engine session id to continue instead of starting fresh.
+        resume_session_id: a session_ref from find_sessions (like "s:12") or an engine session id, to continue
+          that chat instead of starting fresh. The user sees a reuse card and may start fresh or pick another.
+        reason: one line on why this engine/model/effort (shown on the task card).
         """
         return _dump(await bridge_call("delegate", {
             "instructions": instructions, "engine": engine, "model": model, "effort": effort,
-            "title": title, "cwd": cwd, "resume_session_id": resume_session_id}, timeout=60))
+            "title": title, "cwd": cwd, "resume_session_id": resume_session_id, "reason": reason}, timeout=60))
+
+    @server.tool()
+    async def ask_user(question: str, options: list[str] | None = None, question_id: int = 0) -> str:
+        """Ask the user a question in the app and wait for the answer.
+
+        options: optional short choices shown as buttons (the user can also type an answer).
+        One call waits a few minutes at most. If there is no answer yet it returns "answered": false and a
+        question_id; call ask_user again with that question_id (question can be repeated) to keep waiting.
+        """
+        limit = wait_limit()
+        res = await bridge_call("ask", {"question": question, "options": list(options or []),
+                                        "question_id": question_id, "timeout": limit}, timeout=limit + 30)
+        if not res.get("answered"):
+            res["note"] = "No answer yet. Call ask_user again with this question_id to keep waiting."
+        return _dump(res)
 
     @server.tool()
     async def task_status(task_id: int = 0) -> str:

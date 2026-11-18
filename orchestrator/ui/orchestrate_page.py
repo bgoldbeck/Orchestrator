@@ -6,9 +6,14 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
+    LineEdit,
+    MessageBoxBase,
+    PillPushButton,
+    RadioButton,
+    SubtitleLabel,
     CaptionLabel,
     CheckBox,
     ComboBox,
@@ -34,11 +39,11 @@ from orchestrator.ui.chat_view import ModelPill
 from orchestrator.ui.theme import STATUS_COLORS, engine_badge, palette
 from orchestrator.ui_text import relative
 
-TASK_COLORS = {"queued": STATUS_COLORS["idle"], "running": STATUS_COLORS["running"],
+TASK_COLORS = {"proposed": STATUS_COLORS["waiting"], "queued": STATUS_COLORS["idle"], "running": STATUS_COLORS["running"],
                "waiting": STATUS_COLORS["waiting"], "done": STATUS_COLORS["done"],
                "failed": STATUS_COLORS["error"], "stopped": STATUS_COLORS["idle"],
                "error": STATUS_COLORS["error"]}
-TASK_LABELS = {"queued": "Queued", "running": "Running", "waiting": "Waiting on you", "done": "Done",
+TASK_LABELS = {"proposed": "Needs OK", "queued": "Queued", "running": "Running", "waiting": "Waiting on you", "done": "Done",
                "failed": "Failed", "stopped": "Stopped", "error": "Failed"}
 
 
@@ -97,10 +102,30 @@ class TaskCard(QFrame):
         top.addWidget(status_pill(t.status, self), 0, Qt.AlignTop)
         lay.addLayout(top)
 
+        if t.pick_reason:
+            tags = []
+            if t.reused:
+                tags.append("♻ reused")
+            if t.escalated:
+                tags.append("⤴ escalated")
+            elif t.auto_picked:
+                tags.append("auto")
+            why = CaptionLabel(("[" + " · ".join(tags) + "]  " if tags else "") + t.pick_reason, self)
+            why.setObjectName("pickReason")
+            why.setWordWrap(True)
+            why.setStyleSheet(f"color:{p['muted']}; padding-left:34px; font-style:italic;")
+            lay.addWidget(why)
+
         self.last = CaptionLabel("", self)
         self.last.setStyleSheet(f"color:{p['faint']}; padding-left:34px;")
         self.last.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         lay.addWidget(self.last)
+
+        self.proposal = None
+        if t.status == "proposed":
+            self.proposal = self._proposal_box(t)
+            lay.addWidget(self.proposal)
+            self.last.hide()
 
         rep = t.result or {}
         if t.status in ("done", "failed", "stopped") and rep:
@@ -145,6 +170,12 @@ class TaskCard(QFrame):
         openb = TransparentPushButton(FIF.CHAT, "Open chat", self)
         openb.clicked.connect(lambda: self.openChat.emit(self.sid) if self.sid else None)
         btns.addWidget(openb)
+        if t.status in ("proposed", "queued"):
+            self.pick = ModelPill(page.db, self)
+            self.pick.set_value(t.engine, t.model or "", t.effort or "", locked=bool(t.reused))
+            self.pick.setToolTip("Change the engine, model or effort before it starts")
+            self.pick.changed.connect(lambda e, m, ef: self._change(e, m, ef))
+            btns.addWidget(self.pick)
         if t.status in ACTIVE:
             stop = TransparentPushButton(FIF.PAUSE, "Stop", self)
             stop.clicked.connect(lambda: asyncio.ensure_future(page.om.stop_task(self.tid)))
@@ -157,7 +188,66 @@ class TaskCard(QFrame):
         lay.addLayout(btns)
         self.refresh(t)
 
+    def _proposal_box(self, t: Task) -> QWidget:
+        p = palette()
+        prop = t.proposal or {}
+        box = QFrame(self)
+        box.setObjectName("proposal")
+        box.setStyleSheet(f"#proposal {{ background:{p['warn_bg']}; border-radius:8px; }}")
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(12, 8, 8, 8)
+        bl.setSpacing(6)
+        if prop.get("kind") == "reuse":
+            s = self.page.db.session(int(prop.get("session_id") or 0))
+            when = relative(s.last_active) if s else ""
+            text = (f"Will continue “{s.title}” ({ENGINES.get(s.engine, s.engine)}, {when})" if s
+                    else "Will continue an earlier chat")
+            buttons = [("Use it", "accept", True), ("Start fresh", "fresh", False), ("Pick another", "pick", False)]
+        else:
+            text = f"Auto picked {model_line(self.page.db, t.engine, t.model, t.effort)}. Start it, or change the model first."
+            buttons = [("Start", "accept", True)]
+        self.proposalText = BodyLabel(text, box)
+        self.proposalText.setWordWrap(True)
+        bl.addWidget(self.proposalText)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        for label, action, primary in buttons:
+            b = (PrimaryPushButton if primary else PushButton)(label, box)
+            b.clicked.connect(lambda _=False, a=action: self._resolve(a))
+            row.addWidget(b)
+        row.addStretch(1)
+        self.countdown = CaptionLabel("", box)
+        self.countdown.setStyleSheet(f"color:{p['muted']};")
+        row.addWidget(self.countdown)
+        bl.addLayout(row)
+        return box
+
+    def _resolve(self, action: str) -> None:
+        t = self.page.db.task(self.tid)
+        if not t:
+            return
+        if action == "pick":
+            cands = [c for c in (t.proposal or {}).get("candidates", [])]
+            dlg = PickSessionDialog(cands, self.window())
+            if not dlg.exec() or dlg.choice is None:
+                return
+            self.page.om.resolve_proposal(self.tid, "pick", dlg.choice)
+        else:
+            self.page.om.resolve_proposal(self.tid, action)
+
+    def _change(self, engine: str, model: str, effort: str) -> None:
+        try:
+            self.page.om.change_pick(self.tid, engine, model, effort)
+        except Exception as exc:  # noqa: BLE001 - disabled model etc.
+            InfoBar.warning("Can't use that model", str(exc), parent=self.window(),
+                            position=InfoBarPosition.TOP_RIGHT, duration=4000)
+
     def refresh(self, t: Task) -> None:
+        if self.proposal is not None and (t.proposal or {}).get("deadline"):
+            left = max(0, int(round(t.proposal["deadline"] - time.time())))
+            self.countdown.setText(f"Starts in {left}s")
+        elif self.proposal is not None:
+            self.countdown.setText("Waiting for you")
         end = t.finished_at or time.time()
         el = fmt_elapsed(end - t.started_at) if t.started_at else "not started"
         self.sub.setText(f"{model_line(self.page.db, t.engine, t.model, t.effort)}  ·  {el}")
@@ -172,7 +262,7 @@ class TaskCard(QFrame):
             self.last.hide()
         else:
             self.approval.hide()
-            if t.status in ACTIVE:
+            if t.status in ("queued", "running", "waiting"):
                 self.last.show()
 
     def _answer(self, ok: bool) -> None:
@@ -180,6 +270,40 @@ class TaskCard(QFrame):
         if pend and not pend[1].done():
             pend[1].set_result(ok)
         self.approval.hide()
+
+
+class PickSessionDialog(MessageBoxBase):
+    """Pick another earlier chat to continue (candidates from find_sessions)."""
+
+    def __init__(self, candidates: list[dict], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.choice: int | None = None
+        self.viewLayout.addWidget(SubtitleLabel("Continue which chat?", self))
+        self.group = QButtonGroup(self)
+        p = palette()
+        if not candidates:
+            self.viewLayout.addWidget(BodyLabel("No other matching chats were found.", self))
+        for i, c in enumerate(candidates):
+            rb = RadioButton(f"{c['title']}  ·  {c['engine_label']}  ·  {c['last_active']}", self)
+            self.group.addButton(rb, i)
+            self.viewLayout.addWidget(rb)
+            why = CaptionLabel(f"{c['why']}\n{(c.get('summary') or '')[:160]}", self)
+            why.setWordWrap(True)
+            why.setStyleSheet(f"color:{p['muted']}; padding-left:28px;")
+            self.viewLayout.addWidget(why)
+        if candidates:
+            self.group.button(0).setChecked(True)
+        self.cands = candidates
+        self.yesButton.setText("Continue it")
+        self.cancelButton.setText("Cancel")
+        self.widget.setMinimumWidth(520)
+
+    def validate(self) -> bool:  # noqa: D401 - MessageBoxBase hook
+        i = self.group.checkedId()
+        if i < 0 or i >= len(self.cands):
+            return False
+        self.choice = int(self.cands[i]["session_ref"].split(":", 1)[1])
+        return True
 
 
 class OrchestratePage(SmoothScrollArea):
@@ -249,6 +373,11 @@ class OrchestratePage(SmoothScrollArea):
         self.pill = ModelPill(db, self.composer)
         self.pill.changed.connect(lambda e, m, ef: self.pill.set_value(e, m, ef, False))
         row.addWidget(self.pill)
+        self.autoPlanner = CheckBox("Auto", self.composer)
+        self.autoPlanner.setToolTip("Let the app pick the planner's engine and strength from the goal (enabled models only)")
+        self.autoPlanner.setChecked(bool(db.get_setting("orchestrate.auto_planner", False)))
+        self.autoPlanner.toggled.connect(self._auto_toggled)
+        row.addWidget(self.autoPlanner)
         row.addSpacing(8)
         row.addWidget(CaptionLabel("Max parallel", self.composer))
         self.maxPar = SpinBox(self.composer)
@@ -310,6 +439,15 @@ class OrchestratePage(SmoothScrollArea):
         self.plannerLast.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.plannerLast.setWordWrap(True)
         pl.addWidget(self.plannerLast)
+        self.plannerWhy = CaptionLabel("", self.planner)
+        self.plannerWhy.setStyleSheet(f"color:{p['muted']}; padding-left:38px; font-style:italic;")
+        pl.addWidget(self.plannerWhy)
+        self.questions = QWidget(self.planner)
+        self.qlay = QVBoxLayout(self.questions)
+        self.qlay.setContentsMargins(38, 6, 0, 0)
+        self.qlay.setSpacing(8)
+        pl.addWidget(self.questions)
+        self._q_shown: tuple = ()
         lay.addWidget(self.planner)
 
         self.boardHead = CaptionLabel("", self.column)
@@ -340,8 +478,10 @@ class OrchestratePage(SmoothScrollArea):
         self._tick.start(1000)
         om.changed.connect(self._on_changed)
         om.task_changed.connect(lambda oid, _t: self._on_changed(oid))
+        om.question_asked.connect(self._on_question)
         mgr.approval_requested.connect(self._on_approval)
         self.reload()
+        self._auto_toggled(self.autoPlanner.isChecked())
 
     # ---- data
     def reload(self) -> None:
@@ -403,6 +543,7 @@ class OrchestratePage(SmoothScrollArea):
         tasks = self.db.tasks(orch.id)
         self._render_planner(orch)
         n_act = sum(1 for t in tasks if t.status in ACTIVE)
+        self._q_shown = ()  # questions box is rebuilt with the strip
         n_done = sum(1 for t in tasks if t.status == "done")
         self.boardHead.setText(f"SUB-AGENTS  ·  {len(tasks)} tasks  ·  {n_act} active  ·  {n_done} done  ·  "
                                f"max {orch.max_parallel} at once")
@@ -424,7 +565,8 @@ class OrchestratePage(SmoothScrollArea):
         self.goalLabel.setText(orch.goal)
         running = bool(orch.session_id and self.mgr.is_running(orch.session_id))
         s = self.db.session(orch.session_id) if orch.session_id else None
-        status = "waiting" if s and s.status == "waiting" else ("running" if running else
+        asking = bool(self.db.open_questions(orch.id))
+        status = "waiting" if (s and s.status == "waiting") or asking else ("running" if running else
                                                                   {"done": "done", "error": "failed"}.get(orch.status, orch.status))
         if orch.status == "running" and not running and any(t.status in ACTIVE for t in self.db.tasks(orch.id)):
             status = "running"
@@ -439,6 +581,49 @@ class OrchestratePage(SmoothScrollArea):
                                 f"started {relative(orch.created_at)}  ·  {fmt_elapsed(end - orch.created_at)}")
         self.stopAll.setEnabled(self.om.is_active(orch.id))
         self.plannerLast.setText(self._planner_line(orch))
+        self.plannerWhy.setText(orch.pick_reason or "")
+        self.plannerWhy.setVisible(bool(orch.pick_reason))
+        self._render_questions(orch)
+
+    def _render_questions(self, orch: Orchestration) -> None:
+        qs = self.db.open_questions(orch.id)
+        key = tuple(q.id for q in qs)
+        if key == self._q_shown:
+            return
+        self._q_shown = key
+        while self.qlay.count():
+            w = self.qlay.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        p = palette()
+        for q in qs:
+            box = QFrame(self.questions)
+            box.setObjectName("question")
+            box.setStyleSheet(f"#question {{ background:{p['warn_bg']}; border:1px solid {STATUS_COLORS['waiting']};"
+                              f" border-radius:8px; }}")
+            bl = QVBoxLayout(box)
+            bl.setContentsMargins(12, 8, 8, 8)
+            head = CaptionLabel("THE PLANNER ASKS", box)
+            head.setStyleSheet(f"color:{STATUS_COLORS['waiting']}; font-weight:600;")
+            bl.addWidget(head)
+            txt = BodyLabel(q.text, box)
+            txt.setWordWrap(True)
+            bl.addWidget(txt)
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            for opt in q.options:
+                b = PillPushButton(opt, box)
+                b.clicked.connect(lambda _=False, qid=q.id, o=opt: self.om.answer(qid, o))
+                row.addWidget(b)
+            edit = LineEdit(box)
+            edit.setPlaceholderText("Type an answer…")
+            send = PrimaryPushButton("Answer", box)
+            send.clicked.connect(lambda _=False, qid=q.id, e=edit: self.om.answer(qid, e.text()))
+            edit.returnPressed.connect(lambda qid=q.id, e=edit: self.om.answer(qid, e.text()))
+            row.addWidget(edit, 1)
+            row.addWidget(send)
+            bl.addLayout(row)
+            self.qlay.addWidget(box)
 
     def _planner_line(self, orch: Orchestration) -> str:
         if not orch.session_id:
@@ -446,6 +631,8 @@ class OrchestratePage(SmoothScrollArea):
         pend = self.pending.get(orch.session_id)
         if pend and not pend[1].done():
             return f"Waiting on you: wants to use {pend[0].tool}. Open the planner chat to answer."
+        if self.db.open_questions(orch.id):
+            return "Waiting on you: the planner asked a question below."
         if self.mgr.is_running(orch.session_id):
             return self.om.last_line(orch.session_id) or "Thinking…"
         msgs = [m for m in self.db.messages(orch.session_id) if m["role"] == "assistant" and m["kind"] == "text"]
@@ -476,6 +663,13 @@ class OrchestratePage(SmoothScrollArea):
                 self.current = oid
                 self._project_changed()
 
+    def _on_question(self, oid: int, qid: int) -> None:
+        self._on_changed(oid)
+        q = self.db.question(qid)
+        if q and self.isVisible():
+            InfoBar.warning("The planner asks", q.text[:160], parent=self.window(),
+                            position=InfoBarPosition.TOP_RIGHT, duration=6000)
+
     def _on_approval(self, sid: int, req, fut) -> None:
         t = self.db.task_for_session(sid)
         orch = self.db.orchestration_for_session(sid)
@@ -495,8 +689,11 @@ class OrchestratePage(SmoothScrollArea):
         pid = self.project.currentData()
         goal = self.goal.toPlainText().strip()
         try:
-            o = self.om.start(pid or 0, goal, self.pill.engine, self.pill.model, self.pill.effort,
-                              self.maxPar.value())
+            if self.autoPlanner.isChecked():
+                o = self.om.start(pid or 0, goal, "auto", "", "", self.maxPar.value())
+            else:
+                o = self.om.start(pid or 0, goal, self.pill.engine, self.pill.model, self.pill.effort,
+                                  self.maxPar.value())
         except OrchestrationError as exc:
             self.composerError.setText(str(exc))
             self.composerError.show()
@@ -505,6 +702,10 @@ class OrchestratePage(SmoothScrollArea):
         self.goal.clear()
         self.current = o.id
         self._project_changed()
+
+    def _auto_toggled(self, on: bool) -> None:
+        self.db.set_setting("orchestrate.auto_planner", bool(on))
+        self.pill.setEnabled(not on)
 
     def _open_planner(self) -> None:
         o = self.db.orchestration(self.current) if self.current else None

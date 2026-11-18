@@ -57,6 +57,9 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.orchestrate, FIF.ROBOT, "Orchestrate")
         self.orchestrate.openChat.connect(self.open_session)
         self.om.changed.connect(lambda _o: self.chats.sidebar.reload_soon())
+        from orchestrator.core.summaries import Summarizer
+
+        self.summarizer = Summarizer(db, mgr, self)
         self.projects.openProject.connect(self.open_project)
         self.projects.projectsChanged.connect(self.chats.sidebar.reload)
         self.runner = runner
@@ -90,12 +93,26 @@ class MainWindow(FluentWindow):
             self.tray.quitRequested.connect(self.quit_app)
             QApplication.instance().setQuitOnLastWindowClosed(False)
             runner.run_started.connect(lambda *_: self.chats.sidebar.reload())
+            self.om.question_asked.connect(self._question_toast)
+            mgr.approval_requested.connect(self._subagent_approval_toast)
         self.settings.models.changed.connect(self._models_changed)
 
     def _models_changed(self) -> None:
         self.chats.chat.refresh_models()
         if self.schedules is not None:
             self.schedules.reload()
+
+    def _question_toast(self, oid: int, qid: int) -> None:
+        q = self.db.question(qid)
+        o = self.db.orchestration(oid)
+        if q and self.tray is not None:
+            self.tray.notify("The planner asks", q.text[:200], o.session_id if o else None, "warning")
+
+    def _subagent_approval_toast(self, sid: int, req, _fut) -> None:
+        # The tray already notifies when the window is hidden; sub-agents also notify when it is visible.
+        t = self.db.task_for_session(sid)
+        if t and self.tray is not None and self.tray._window_visible():
+            self.tray.notify("Sub-agent needs you", f"{t.title} wants to use {req.tool}", sid, "warning")
 
     def _refresh_projects_if_visible(self) -> None:
         if self.stackedWidget.currentWidget() is self.projects:
