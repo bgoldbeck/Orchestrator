@@ -107,6 +107,7 @@ def main() -> int:
     from qfluentwidgets import Theme, setFontFamilies, setTheme, setThemeColor
 
     from orchestrator.app import _app_icon
+    from orchestrator.core.session_index import SessionIndexer
     from orchestrator.core.session_manager import SessionManager
     from orchestrator.storage.db import Database
     from orchestrator.ui.main_window import MainWindow
@@ -121,7 +122,7 @@ def main() -> int:
     asyncio.set_event_loop(loop)
     db = Database()
     mgr = SessionManager(db)
-    win = MainWindow(db, mgr, _app_icon())
+    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db))
     win.setMicaEffectEnabled(False)  # grab() can't capture Mica; use solid dark background
     win.show()
     with loop:

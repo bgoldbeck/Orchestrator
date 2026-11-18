@@ -16,6 +16,21 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - Claude asks before it runs a tool, with Allow / Deny inline in the chat.
 - Data is stored in SQLite at `%APPDATA%\Orchestrator\orchestrator.db`. Tokens are kept only in Windows Credential Manager (keyring).
 
+## M2: import and resume
+
+![Imported sessions](docs/screenshots/m2.png)
+
+- Orchestrator reads, but never changes, the engines' own logs: `~/.claude/projects/*/*.jsonl` and `~/.codex/sessions/**`.
+  Codex titles come from `~/.codex/session_index.jsonl`. Claude titles come from `custom-title` lines, or else the first prompt.
+  Codex sub-agent threads and scratch folders under `%TEMP%` are skipped.
+- It checks for changes every 8 s. Only changed files are parsed again, in a worker thread.
+- Sessions go under the project whose folder contains their working folder. Other folders are listed under
+  "Discovered in engine history"; adding the folder as a project moves them up.
+- Each chat row shows a status dot (it pulses while running), the engine badge and the age.
+- Opening an imported chat shows its history from the engine log. Typing continues the same engine session.
+- Several chats can run at once. You can switch between them while they stream, and their live state is restored.
+- Deleting an imported chat hides it in Orchestrator; the engine's log is kept.
+
 ## Run
 
 ```
@@ -35,6 +50,8 @@ Engines must be installed and signed in:
 ```
 .venv\Scripts\python -m pytest -q                                   # adapter parsing, storage, markdown
 .venv\Scripts\python scripts\ui_smoke.py --engine codex --rich --shot docs\screenshots\m1.png
+.venv\Scripts\python scripts\ui_smoke_m2.py real                    # import + resume + 2 chats at once
+.venv\Scripts\python scripts\ui_smoke_m2.py demo --shot docs\screenshots\m2.png
 ```
 
 `ui_smoke.py` opens the real window and runs a live chat against a throwaway data folder: a new turn, a resume, and a tool turn.
