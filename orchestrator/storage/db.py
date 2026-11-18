@@ -34,6 +34,18 @@ CREATE TABLE IF NOT EXISTS models(
   engine TEXT NOT NULL, id TEXT NOT NULL, label TEXT NOT NULL, efforts_json TEXT NOT NULL,
   sort INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(engine, id));
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS schedules(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  prompt TEXT NOT NULL, engine TEXT NOT NULL, model TEXT, effort TEXT,
+  kind TEXT NOT NULL DEFAULT 'cron', cron TEXT, run_at REAL,
+  new_or_resume TEXT NOT NULL DEFAULT 'new', session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+  permission TEXT NOT NULL DEFAULT 'read-only', missed TEXT NOT NULL DEFAULT 'run_once',
+  enabled INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS runs(
+  id INTEGER PRIMARY KEY, schedule_id INTEGER NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+  session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL, status TEXT NOT NULL,
+  started_at REAL NOT NULL, finished_at REAL, note TEXT);
+CREATE INDEX IF NOT EXISTS ix_runs_schedule ON runs(schedule_id, started_at);
 CREATE INDEX IF NOT EXISTS ix_messages_session ON messages(session_id, id);
 CREATE INDEX IF NOT EXISTS ix_sessions_project ON sessions(project_id, last_active);
 """
@@ -71,6 +83,40 @@ class Session:
     cwd: str | None = None
 
 
+SCHEDULE_FIELDS = ("name", "project_id", "prompt", "engine", "model", "effort", "kind", "cron", "run_at",
+                   "new_or_resume", "session_id", "permission", "missed", "enabled")
+
+
+@dataclass
+class Schedule:
+    id: int
+    name: str
+    project_id: int
+    prompt: str
+    engine: str
+    model: str | None
+    effort: str | None
+    kind: str  # cron | once
+    cron: str | None
+    run_at: float | None
+    new_or_resume: str  # new | resume
+    session_id: int | None
+    permission: str  # read-only | allow-edits | full
+    missed: str  # run_once | skip
+    enabled: bool
+
+
+@dataclass
+class Run:
+    id: int
+    schedule_id: int
+    session_id: int | None
+    status: str  # running | done | error | skipped | stopped
+    started_at: float
+    finished_at: float | None
+    note: str | None
+
+
 @dataclass
 class Model:
     engine: str
@@ -97,6 +143,8 @@ class Database:
             self.reset_models()
         # Sessions left "running" by a crash are not running anymore.
         self.conn.execute("UPDATE sessions SET status='idle' WHERE status IN ('running','waiting')")
+        self.conn.execute("UPDATE runs SET status='error', note='app closed during run', finished_at=started_at "
+                          "WHERE status='running'")
         self.conn.execute("DELETE FROM projects WHERE auto=1 AND id NOT IN (SELECT project_id FROM sessions)")
         self.conn.commit()
 
@@ -226,6 +274,63 @@ class Database:
     def messages(self, session_id: int) -> list[dict[str, Any]]:
         return [{"role": r["role"], "kind": r["kind"], **json.loads(r["content_json"])}
                 for r in self.conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,))]
+
+    # -- schedules
+    @staticmethod
+    def _sched(r: sqlite3.Row) -> Schedule:
+        return Schedule(r["id"], r["name"], r["project_id"], r["prompt"], r["engine"], r["model"], r["effort"],
+                        r["kind"], r["cron"], r["run_at"], r["new_or_resume"], r["session_id"], r["permission"],
+                        r["missed"], bool(r["enabled"]))
+
+    def schedules(self) -> list[Schedule]:
+        return [self._sched(r) for r in self.conn.execute("SELECT * FROM schedules ORDER BY name COLLATE NOCASE")]
+
+    def schedule(self, sched_id: int) -> Schedule | None:
+        r = self.conn.execute("SELECT * FROM schedules WHERE id=?", (sched_id,)).fetchone()
+        return self._sched(r) if r else None
+
+    def save_schedule(self, data: dict[str, Any], sched_id: int | None = None) -> int:
+        vals = {k: data.get(k) for k in SCHEDULE_FIELDS if k in data}
+        if "enabled" in vals:
+            vals["enabled"] = int(bool(vals["enabled"]))
+        if sched_id:
+            cols = ", ".join(f"{k}=?" for k in vals)
+            self.conn.execute(f"UPDATE schedules SET {cols} WHERE id=?", (*vals.values(), sched_id))
+            self.conn.commit()
+            return sched_id
+        vals["created_at"] = time.time()
+        cols = ", ".join(vals)
+        cur = self.conn.execute(f"INSERT INTO schedules({cols}) VALUES({', '.join('?' * len(vals))})", tuple(vals.values()))
+        self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def delete_schedule(self, sched_id: int) -> None:
+        self.conn.execute("DELETE FROM schedules WHERE id=?", (sched_id,))
+        self.conn.commit()
+
+    # -- runs
+    @staticmethod
+    def _run(r: sqlite3.Row) -> Run:
+        return Run(r["id"], r["schedule_id"], r["session_id"], r["status"], r["started_at"], r["finished_at"], r["note"])
+
+    def add_run(self, sched_id: int, session_id: int | None, status: str = "running", note: str | None = None) -> int:
+        now = time.time()
+        cur = self.conn.execute("INSERT INTO runs(schedule_id,session_id,status,started_at,finished_at,note) VALUES(?,?,?,?,?,?)",
+                                (sched_id, session_id, status, now, None if status == "running" else now, note))
+        self.conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    def finish_run(self, run_id: int, status: str, note: str | None = None) -> None:
+        self.conn.execute("UPDATE runs SET status=?, finished_at=?, note=COALESCE(?, note) WHERE id=?",
+                          (status, time.time(), note, run_id))
+        self.conn.commit()
+
+    def runs(self, sched_id: int, limit: int = 20) -> list[Run]:
+        return [self._run(r) for r in self.conn.execute(
+            "SELECT * FROM runs WHERE schedule_id=? ORDER BY started_at DESC LIMIT ?", (sched_id, limit))]
+
+    def running_runs(self) -> list[Run]:
+        return [self._run(r) for r in self.conn.execute("SELECT * FROM runs WHERE status='running'")]
 
     # -- models
     def models(self, engine: str | None = None) -> list[Model]:

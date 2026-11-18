@@ -48,6 +48,7 @@ CONTENT_MAX = 860
 class PromptBox(QFrame):
     submitted = Signal(str)
     stopRequested = Signal()
+    runLaterRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -79,8 +80,14 @@ class PromptBox(QFrame):
         self.send.setToolTip("Send (Enter)")
         self.send.installEventFilter(ToolTipFilter(self.send))
         self.send.clicked.connect(self._on_button)
+        self.later = ToolButton(FIF.DATE_TIME, self)
+        self.later.setFixedSize(34, 34)
+        self.later.setToolTip("Run once, later…")
+        self.later.installEventFilter(ToolTipFilter(self.later))
+        self.later.clicked.connect(self.runLaterRequested.emit)
         row.addWidget(self.hint)
         row.addStretch(1)
+        row.addWidget(self.later)
         row.addWidget(self.send)
         lay.addLayout(row)
         self._running = False
@@ -226,6 +233,7 @@ class EmptyState(QWidget):
 
 
 class ChatView(QWidget):
+    runOnceRequested = Signal(dict, object)  # prefill, anchor widget
     newChatRequested = Signal()
     addProjectRequested = Signal()
     openSettingsRequested = Signal()
@@ -308,6 +316,7 @@ class ChatView(QWidget):
         pl.addStretch(1)
         self.prompt.submitted.connect(self._send)
         self.prompt.stopRequested.connect(self._stop)
+        self.prompt.runLaterRequested.connect(self._run_later)
         root.addWidget(pw)
         self.prompt_wrap = pw
 
@@ -451,6 +460,15 @@ class ChatView(QWidget):
         self._current = None
         self.mgr.send(self.session.id, text)
         self._show_dots()
+
+    def _run_later(self) -> None:
+        s = self.session
+        if not s:
+            return
+        self.runOnceRequested.emit({
+            "prompt": self.prompt.edit.toPlainText().strip(), "engine": s.engine, "model": s.model, "effort": s.effort,
+            "project_id": s.project_id, "session_id": s.id if s.engine_session_id else None,
+        }, self.prompt.later)
 
     def _stop(self) -> None:
         if self.session:

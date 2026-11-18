@@ -29,6 +29,7 @@ from qfluentwidgets import (
     SmoothScrollArea,
     StrongBodyLabel,
     SubtitleLabel,
+    SwitchButton,
     TableWidget,
     TitleLabel,
     Theme,
@@ -281,6 +282,17 @@ class SettingsPage(SmoothScrollArea):
         lay.addWidget(f)
 
         lay.addSpacing(6)
+        lay.addWidget(SubtitleLabel("Background", body))
+        fb, fbl = card(body)
+        fbl.addLayout(self._switch_row(fb, "Keep running in the tray when the window is closed",
+                                       "Schedules only run while Orchestrator is running.", "ui.close_to_tray", True))
+        fbl.addLayout(self._switch_row(fb, "Notifications", "When a chat or schedule finishes, fails, or needs you.",
+                                       "ui.notifications", True))
+        fbl.addLayout(self._switch_row(fb, "Start at login", "Starts hidden in the tray when you sign in to Windows.",
+                                       None, False, getter=self._autostart_get, setter=self._autostart_set))
+        lay.addWidget(fb)
+
+        lay.addSpacing(6)
         lay.addWidget(SubtitleLabel("Appearance", body))
         f2, fl2 = card(body)
         fl2.addLayout(self._combo_row(f2, "Theme", "Applies immediately.", "ui.theme", ["Dark", "Light", "Auto"], "Dark",
@@ -310,6 +322,42 @@ class SettingsPage(SmoothScrollArea):
         self._probe = VersionProbe(self)
         self._probe.done.connect(self._on_version)
         self._probe.start()
+
+    def _switch_row(self, parent, title, sub, key, default, getter=None, setter=None) -> QHBoxLayout:
+        row = QHBoxLayout()
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(BodyLabel(title, parent))
+        if sub:
+            s = CaptionLabel(sub, parent)
+            s.setStyleSheet(f"color:{palette()['muted']};")
+            col.addWidget(s)
+        sw = SwitchButton(parent)
+        sw.setOnText("On")
+        sw.setOffText("Off")
+        sw.setChecked(getter() if getter else bool(self.db.get_setting(key, default)))
+        sw.checkedChanged.connect(setter if setter else (lambda v: self.db.set_setting(key, v)))
+        row.addLayout(col, 1)
+        row.addWidget(sw)
+        return row
+
+    @staticmethod
+    def _autostart_get() -> bool:
+        try:
+            from orchestrator.core import autostart
+
+            return autostart.is_enabled()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _autostart_set(self, on: bool) -> None:
+        from orchestrator.core import autostart
+
+        try:
+            autostart.set_enabled(on)
+        except Exception as exc:  # noqa: BLE001
+            InfoBar.error("Could not change start at login", str(exc), parent=self.window(),
+                          position=InfoBarPosition.TOP_RIGHT)
 
     def _combo_row(self, parent, title, sub, key, options, default, on_change=None) -> QHBoxLayout:
         row = QHBoxLayout()

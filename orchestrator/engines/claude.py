@@ -163,6 +163,10 @@ class ClaudeAdapter(AgentAdapter):
             return
         try:
             import claude_agent_sdk as sdk
+
+            from orchestrator.engines.winproc import install_no_window_spawn
+
+            install_no_window_spawn()  # claude.exe + its MCP servers: no console windows under pythonw
         except ImportError:
             yield Error("claude-agent-sdk is not installed.")
             yield Done(is_error=True)

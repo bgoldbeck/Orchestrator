@@ -32,6 +32,7 @@ def main() -> int:
     import qasync
     from qfluentwidgets import Theme, setFontFamilies, setTheme, setThemeColor
 
+    from orchestrator.core.scheduler import ScheduleRunner
     from orchestrator.core.session_index import SessionIndexer
     from orchestrator.core.session_manager import SessionManager
     from orchestrator.storage.db import Database
@@ -57,8 +58,11 @@ def main() -> int:
     app.aboutToQuit.connect(closing.set)
 
     mgr = SessionManager(db)
-    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db))
-    win.show()
+    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db), runner=ScheduleRunner(db, mgr))
+    if "--tray" in sys.argv and win.tray is not None:
+        pass  # started at login: stay in the tray
+    else:
+        win.show()
 
     with loop:
         loop.run_until_complete(closing.wait())
