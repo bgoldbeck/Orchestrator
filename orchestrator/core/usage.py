@@ -30,14 +30,32 @@ WEEK = 7 * 86400
 
 @dataclass
 class Window:
+    """One limit window. A provider fills in whichever its source reports: ``used_percent`` (Codex
+    ``used_percent``, Claude ``utilization``) or ``left_percent`` (a source that counts down). The UI only reads
+    ``remaining_pct`` / ``used_pct``, so every provider shows the same convention: percent left."""
+
     key: str  # five_hour | weekly
     label: str  # "5-hour" | "Weekly"
-    used_percent: float | None = None  # 0-100, None when unknown
+    used_percent: float | None = None  # 0-100 consumed, None when unknown
     resets_at: float | None = None
     exact: bool = False
     status: str = ""  # allowed | allowed_warning | rejected (Claude) or ""
     estimate: str = ""  # e.g. "≈ 1.2M tokens in this window (local logs)"
     updated_at: float | None = None
+    left_percent: float | None = None  # 0-100 remaining, for sources that report what is left
+
+    @property
+    def remaining_pct(self) -> float | None:
+        if self.left_percent is not None:
+            return max(0.0, min(100.0, float(self.left_percent)))
+        if self.used_percent is not None:
+            return max(0.0, min(100.0, 100.0 - float(self.used_percent)))
+        return None
+
+    @property
+    def used_pct(self) -> float | None:
+        left = self.remaining_pct
+        return None if left is None else 100.0 - left
 
 
 @dataclass
@@ -106,11 +124,17 @@ def read_all(db: Database | SettingsSnapshot) -> list[ProviderUsage]:
     return out
 
 
-def level(pct: float | None) -> str:
-    """green / amber / red for a used percentage."""
-    if pct is None:
+def level(left: float | None) -> str:
+    """green / amber / red for a percent LEFT: green above 30% left, amber 10-30%, red under 10%."""
+    if left is None:
         return "unknown"
-    return "red" if pct >= 90 else "amber" if pct >= 70 else "green"
+    return "red" if left < 10 else "amber" if left <= 30 else "green"
+
+
+def tightest(windows: list[Window]) -> Window | None:
+    """The window with the least left (what limits you first)."""
+    known = [w for w in windows if w.remaining_pct is not None]
+    return min(known, key=lambda w: w.remaining_pct) if known else None
 
 
 # ------------------------------------------------------------------ Codex (exact)
@@ -322,23 +346,27 @@ register(ClaudeUsage())
 
 # ------------------------------------------------------------------ history
 
+HISTORY_KEY = "usage.history.left"  # samples of percent LEFT
+
+
 def record_history(db: Database, items: list[ProviderUsage]) -> None:
-    """Keep a small history of percentages (one sample per provider/window when it changes, max 500)."""
-    hist = list(db.get_setting("usage.history") or [])
+    """Keep a small history of percent left (one sample per provider/window when it changes, max 500)."""
+    hist = list(db.get_setting(HISTORY_KEY) or [])
     last = {(h["p"], h["w"]): h for h in hist}
     now = time.time()
     for u in items:
         for w in u.windows:
-            if w.used_percent is None:
+            left = w.remaining_pct
+            if left is None:
                 continue
             prev = last.get((u.provider, w.key))
-            if prev and prev["v"] == w.used_percent and now - prev["t"] < 3600:
+            if prev and prev["v"] == left and now - prev["t"] < 3600:
                 continue
-            h = {"p": u.provider, "w": w.key, "v": w.used_percent, "t": now, "r": w.resets_at}
+            h = {"p": u.provider, "w": w.key, "v": left, "t": now, "r": w.resets_at}
             hist.append(h)
             last[(u.provider, w.key)] = h
-    db.set_setting("usage.history", hist[-500:])
+    db.set_setting(HISTORY_KEY, hist[-500:])
 
 
 def history(db: Database, provider: str, window: str) -> list[dict]:
-    return [h for h in db.get_setting("usage.history") or [] if h["p"] == provider and h["w"] == window]
+    return [h for h in db.get_setting(HISTORY_KEY) or [] if h["p"] == provider and h["w"] == window]

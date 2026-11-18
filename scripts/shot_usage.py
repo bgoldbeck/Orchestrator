@@ -81,10 +81,10 @@ def main() -> int:
     hist = []
     for i, (c5, cw, aw) in enumerate([(12, 60, 80), (20, 63, 82), (31, 66, 84), (38, 70, 86), (46, 74, 88)]):
         t = now - (5 - i) * 3600
-        hist += [{"p": "codex", "w": "five_hour", "v": float(c5), "t": t, "r": None},
-                 {"p": "codex", "w": "weekly", "v": float(cw), "t": t, "r": None},
-                 {"p": "claude", "w": "weekly", "v": float(aw), "t": t, "r": None}]
-    db.set_setting("usage.history", hist)
+        hist += [{"p": "codex", "w": "five_hour", "v": 100.0 - c5, "t": t, "r": None},
+                 {"p": "codex", "w": "weekly", "v": 100.0 - cw, "t": t, "r": None},
+                 {"p": "claude", "w": "weekly", "v": 100.0 - aw, "t": t, "r": None}]
+    db.set_setting(U.HISTORY_KEY, hist)  # percent left
     mgr = SessionManager(db)
     win = MainWindow(db, mgr, _app_icon())
     win.setMicaEffectEnabled(False)

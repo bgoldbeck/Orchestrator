@@ -211,8 +211,17 @@ window and to fully ready (every page built and sessions refreshed from disk). O
 ## Usage limits
 
 The title bar shows one pill per provider (Codex, Claude). Each pill has two thin bars: the 5-hour window on top
-and the weekly window below. The number is the tighter of the two. Colors: green under 70%, amber from 70%, red from
-90%. Hover a pill to see the percentages and when each window resets. Click it to open **Usage**, which shows
+and the weekly window below. Every provider uses the same convention, **percent left**: bars fill with what is
+left, and the number is the tightest window's percent left (for example "26% left"). Colors: green above 30% left,
+amber 10–30%, red under 10%. Hover a pill to see "46% used · 54% left" and when each window resets.
+
+Both sources report percent **used**, and the app shows 100 minus that:
+
+- Codex `rate_limits.*.used_percent` is the share consumed. Codex's own `/status` shows the remaining share as
+  "% left".
+- Claude's rate-limit event `utilization` is documented as the "fraction of the rate limit consumed (0.0 - 1.0)".
+
+A new provider fills in `used_percent` or `left_percent` on each `Window`. The UI reads only `remaining_pct`. Click it to open **Usage**, which shows
 details, the source and a small history per window. Usage refreshes every 2 minutes and after each turn.
 
 What is exact and what is an estimate:

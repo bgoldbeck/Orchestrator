@@ -56,7 +56,8 @@ def test_codex_usage_is_exact_from_rollout(db, tmp_path):
     u = CodexUsage().read(db)
     five, week = u.window("five_hour"), u.window("weekly")
     assert five.used_percent == 72.0 and five.exact and five.label == "5-hour"
-    assert week.used_percent == 33.0 and week.exact
+    assert five.remaining_pct == 28.0 and five.used_pct == 72.0  # Codex used_percent counts UP (consumed)
+    assert week.used_percent == 33.0 and week.remaining_pct == 67.0 and week.exact
     assert five.resets_at > time.time()
     assert "exact" in u.source
 
@@ -65,7 +66,8 @@ def test_codex_window_already_reset_reads_zero(db, tmp_path):
     from orchestrator.core.usage import CodexUsage
 
     write_rollout(tmp_path, primary=95.0, resets=time.time() - 10)
-    assert CodexUsage().read(db).window("five_hour").used_percent == 0.0
+    w = CodexUsage().read(db).window("five_hour")
+    assert w.used_percent == 0.0 and w.remaining_pct == 100.0
 
 
 def test_codex_no_logs(db):
@@ -103,6 +105,7 @@ def test_claude_rate_limit_event_maps_and_records(db, tmp_path):
     u = ClaudeUsage().read(db)
     five, week = u.window("five_hour"), u.window("weekly")
     assert five.exact and five.used_percent == 81.0 and five.status == "allowed_warning"
+    assert five.remaining_pct == 19.0  # Claude utilization is the fraction consumed, so left = 100 - 81
     assert "1.8k" in five.estimate or "2k" in five.estimate
     assert not week.exact and week.used_percent is None and "tokens" in week.estimate
 
@@ -117,13 +120,28 @@ def test_claude_estimate_only(db):
 def test_level_and_history(db):
     from orchestrator.core.usage import ProviderUsage, Window, history, level, record_history
 
-    assert [level(x) for x in (None, 10, 70, 89.9, 90)] == ["unknown", "green", "amber", "amber", "red"]
+    # level() takes percent LEFT: green > 30, amber 10-30, red < 10
+    assert [level(x) for x in (None, 90, 30.1, 30, 10, 9.9, 0)] == \
+        ["unknown", "green", "green", "amber", "amber", "red", "red"]
     u = ProviderUsage("codex", "Codex", [Window("five_hour", "5-hour", 10.0, exact=True)])
     record_history(db, [u])
     record_history(db, [u])  # unchanged: not repeated
     u.windows[0].used_percent = 20.0
     record_history(db, [u])
-    assert [h["v"] for h in history(db, "codex", "five_hour")] == [10.0, 20.0]
+    assert [h["v"] for h in history(db, "codex", "five_hour")] == [90.0, 80.0]  # history is percent left
+
+
+def test_both_directions_normalize_to_left():
+    from orchestrator.core.usage import Window, tightest
+
+    up = Window("five_hour", "5-hour", used_percent=31.0)  # a source that counts up (consumed)
+    down = Window("weekly", "Weekly", left_percent=69.0)  # a source that counts down (remaining)
+    assert up.remaining_pct == down.remaining_pct == 69.0
+    assert up.used_pct == down.used_pct == 31.0
+    assert Window("x", "X").remaining_pct is None
+    assert Window("x", "X", used_percent=130).remaining_pct == 0.0
+    assert tightest([up, Window("weekly", "Weekly", left_percent=12.0)]).remaining_pct == 12.0
+    assert tightest([Window("x", "X")]) is None
 
 
 def test_custom_provider_registers(db):
@@ -150,9 +168,9 @@ def test_usage_bar_and_page(qapp, db, tmp_path):
     bar = UsageBar(db)
     bar.refresh()  # no running loop: reads synchronously
     pill = bar.pills["codex"]
-    assert pill.usage.window("five_hour").used_percent == 92.0
+    assert pill.usage.window("five_hour").remaining_pct == 8.0
     tip = tooltip_for(pill.usage)
-    assert "5-hour: 92% used" in tip and "resets" in tip and "Weekly: 40% used" in tip
+    assert "5-hour: 92% used · 8% left" in tip and "resets" in tip and "Weekly: 40% used · 60% left" in tip
     hits = []
     bar.openUsage.connect(hits.append)
     from PySide6.QtCore import QPointF, Qt
@@ -166,10 +184,12 @@ def test_usage_bar_and_page(qapp, db, tmp_path):
     page = UsagePage(db, bar)
     page.resize(900, 700)
     page.render()
-    from qfluentwidgets import StrongBodyLabel
+    from qfluentwidgets import BodyLabel, StrongBodyLabel
 
     names = [w.text() for w in page.widget().findChildren(StrongBodyLabel)]
     assert "Codex" in names and "Claude" in names and "5-hour" in names
+    lefts = [w.text() for w in page.widget().findChildren(BodyLabel) if w.objectName() == "leftLabel"]
+    assert "8% left" in lefts and "60% left" in lefts and not any("used" in t for t in lefts)
 
 
 def test_main_window_has_usage_bar(qapp, db, tmp_path):
@@ -197,4 +217,4 @@ def test_read_all_from_snapshot_on_worker_thread(db):
     t.start()
     t.join()
     claude = next(u for u in out if u.provider == "claude")
-    assert claude.window("weekly").used_percent == 50.0 and not claude.note.startswith("Could not")
+    assert claude.window("weekly").remaining_pct == 50.0 and not claude.note.startswith("Could not")
