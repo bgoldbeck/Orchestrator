@@ -1,0 +1,8 @@
+PySide6>=6.8
+PySide6-Fluent-Widgets>=1.7
+qasync>=0.27
+claude-agent-sdk>=0.2
+keyring>=25
+markdown>=3.6
+pygments>=2.18
+pytest>=8

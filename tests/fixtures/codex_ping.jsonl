@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a1ec67-1e73-7a92-80e9-034a4fd55be7"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"PING"}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":800,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":3}}
