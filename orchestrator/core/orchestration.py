@@ -22,14 +22,17 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from orchestrator.core import model_registry
+from orchestrator.core import model_registry, routing
 from orchestrator.core.catalog import ENGINES
+from orchestrator.core.summaries import find_sessions
 from orchestrator.storage.db import Database, Orchestration, Task, app_dir
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 WAIT_LIMIT = 240  # seconds one wait_for call may block (kept under the tool timeout below)
 TOOL_TIMEOUT = 600
-ACTIVE = ("queued", "running", "waiting")
+ACTIVE = ("proposed", "queued", "running", "waiting")
+CONFIRM_MODES = {"countdown": "Start after a short countdown", "always_ask": "Always ask me", "never": "Never ask"}
+COUNTDOWN_SEC = 10
 FINISHED = ("done", "failed", "stopped")
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
@@ -54,21 +57,31 @@ Goal from the user:
 {goal}
 
 You coordinate sub-agents with the `orchestrator` MCP tools:
-- delegate(instructions, engine, model, effort, title, cwd) starts a sub-agent and returns a task_id at once.
+- find_sessions(query) searches earlier chats by summary. Use it first: continuing a chat that already worked on
+  the same thing is cheaper than starting fresh.
+- delegate(instructions, engine, model, effort, title, cwd, resume_session_id, reason) starts a sub-agent and returns
+  a task_id at once. Pass resume_session_id (a session_ref like "s:12") to continue an earlier chat; the user sees a
+  reuse card and may choose to start fresh instead.
 - wait_for(task_ids) waits for tasks and returns their reports. If it says tasks are still pending, call it again.
 - task_status(task_id) checks without waiting. send_to_task(task_id, text) sends a follow-up to a finished sub-agent.
+- ask_user(question, options) asks the user and waits for the answer. Use it only when you truly cannot decide.
 
 How to work:
-1. Look at the project briefly if you need to, then split the goal into a few clear tasks that can run in parallel.
+1. Look at the project briefly if you need to, call find_sessions, then split the goal into a few clear tasks that
+   can run in parallel.
 2. Delegate them. A sub-agent starts with no context, so give complete instructions (which files, what result).
    Give each a short title. Up to {max_parallel} run at once; the rest wait in a queue.
 3. Call wait_for on the task ids. Read each report. If something failed or is missing, send a follow-up or delegate a fix.
+   A task that failed on an automatically picked model is retried once by the app on a stronger setting.
 4. Do not edit files yourself. Sub-agents do the work.
 5. Finish with a short summary for the user: what each task did, files changed, and open questions.
 
-Engines and models you may use (only these ids):
-{models}
-If you leave engine and model empty: {engine} / {model}."""
+Choosing engine, model and effort: leave them empty and the app picks from the enabled models (Auto) with a reason,
+or choose yourself using this routing guide and say why in `reason`:
+{guide}
+
+Engines and models you may use (only these ids; strongest first per engine):
+{models}"""
 
 
 # ---------------------------------------------------------------- reports
@@ -228,6 +241,7 @@ class OrchestrationError(Exception):
 class OrchestrationManager(QObject):
     changed = Signal(int)  # orchestration id (anything about it or its tasks)
     task_changed = Signal(int, int)  # orchestration id, task id
+    question_asked = Signal(int, int)  # orchestration id, question id
 
     def __init__(self, db: Database, mgr, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -236,6 +250,8 @@ class OrchestrationManager(QObject):
         self.bridge = Bridge(self.handle)
         self._events: dict[int, asyncio.Event] = {}
         self._stopping: set[int] = set()
+        self._answers: dict[int, asyncio.Event] = {}
+        self._retry_text: dict[int, str] = {}  # task id -> follow-up text for an escalated retry
         mgr.mcp_provider = self.mcp_for
         mgr.status_changed.connect(self._on_status)
 
@@ -248,12 +264,20 @@ class OrchestrationManager(QObject):
         proj = self.db.project(project_id)
         if not proj:
             raise OrchestrationError("Pick a project.")
+        pick_reason = None
+        if engine == "auto":
+            pick = routing.route_planner(self.db, goal)
+            if not pick:
+                raise OrchestrationError("No models are enabled. Turn one on in Settings › Models.")
+            engine, model, effort, pick_reason = pick.engine, pick.model, pick.effort, pick.reason
         try:
             model_registry.check(self.db, engine, model, strict=True)
         except model_registry.ModelDisabled as exc:
             raise OrchestrationError(str(exc)) from exc
         self.bridge.start()
         orch = self.db.add_orchestration(project_id, goal, engine, model, effort, max(1, int(max_parallel)))
+        if pick_reason:
+            self.db.update_orchestration(orch.id, pick_reason=pick_reason)
         title = "Orchestrate · " + " ".join(goal.split())[:40]
         s = self.db.create_session(project_id, engine, model, effort, title=title)
         self.db.update_orchestration(orch.id, session_id=s.id)
@@ -269,14 +293,13 @@ class OrchestrationManager(QObject):
         proj = self.db.project(orch.project_id) if orch else None
         lines = []
         for e in ENGINES:
-            for m in model_registry.allowed(self.db, e):
+            for m in routing.strength_order(model_registry.allowed(self.db, e)):
                 lines.append(f"- engine {e}: model {m.id} ({m.label}; efforts {', '.join(m.efforts)})")
         if not lines:
             lines.append("- (none enabled)")
-        d = model_registry.default(self.db, orch.engine) if orch else None
         return ORCH_PROMPT.format(path=proj.path if proj else "?", goal=orch.goal if orch else "",
                                   max_parallel=orch.max_parallel if orch else 4, models="\n".join(lines),
-                                  engine=orch.engine if orch else "", model=d[0] if d else "none")
+                                  guide=routing.guide(self.db))
 
     def mcp_for(self, sid: int) -> dict | None:
         orch = self.db.orchestration_for_session(sid)
@@ -304,7 +327,12 @@ class OrchestrationManager(QObject):
             raise OrchestrationError(f"Unknown orchestration {oid}.")
         if op == "delegate":
             return self.delegate(oid, **{k: args.get(k, "") for k in (
-                "instructions", "engine", "model", "effort", "title", "cwd", "resume_session_id")})
+                "instructions", "engine", "model", "effort", "title", "cwd", "resume_session_id", "reason")})
+        if op == "find_sessions":
+            return self.find(oid, str(args.get("query") or ""), str(args.get("project") or ""))
+        if op == "ask":
+            return await self.ask(oid, str(args.get("question") or ""), list(args.get("options") or []),
+                                  int(args.get("question_id") or 0), float(args.get("timeout") or WAIT_LIMIT))
         if op == "status":
             tid = int(args.get("task_id") or 0)
             if tid:
@@ -324,29 +352,32 @@ class OrchestrationManager(QObject):
         return t
 
     def delegate(self, oid: int, instructions: str, engine: str = "", model: str = "", effort: str = "",
-                 title: str = "", cwd: str = "", resume_session_id: str = "") -> dict[str, Any]:
+                 title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "") -> dict[str, Any]:
         orch = self.db.orchestration(oid)
         if not orch or orch.status != "running":
             raise OrchestrationError("This orchestration was stopped; no new tasks can start.")
         if not instructions.strip():
             raise OrchestrationError("instructions is empty.")
         proj = self.db.project(orch.project_id)
-        resumed = None
-        if resume_session_id:
-            resumed = next((self.db.session_by_engine_id(e, resume_session_id) for e in ENGINES
-                            if self.db.session_by_engine_id(e, resume_session_id)), None)
-            if not resumed:
-                raise OrchestrationError(f"No session with id {resume_session_id!r} is known.")
-            engine = resumed.engine
-            model = model or resumed.model or ""
-        engine = (engine or orch.engine).strip().lower()
-        if engine not in ENGINES:
+        resumed = self.resolve_session(resume_session_id) if resume_session_id else None
+        if resume_session_id and not resumed:
+            raise OrchestrationError(f"No session {resume_session_id!r} is known. Use a session_ref from find_sessions.")
+        if resumed:
+            engine = resumed.engine  # reuse keeps that session's engine
+            if not model and resumed.model and model_registry.is_allowed(self.db, engine, resumed.model, strict=True):
+                model, reason = resumed.model, reason or "Continues the earlier chat on its model"
+        engine = engine.strip().lower()
+        if engine and engine not in ENGINES:
             raise OrchestrationError(f"Unknown engine {engine!r}. Use one of: {', '.join(ENGINES)}.")
-        if not model:
-            d = model_registry.default(self.db, engine)
-            if not d:
-                raise OrchestrationError(model_registry.unavailable_message(engine))
-            model, effort = d[0], effort or d[1]
+        auto = not model
+        if auto:  # Auto: pick from enabled models only, with a reason
+            pick = routing.route(self.db, instructions, engine=engine, prefer=orch.engine)
+            if not pick:
+                raise OrchestrationError(model_registry.unavailable_message(engine) if engine else
+                                         "No models are enabled. Turn one on in Settings › Models.")
+            engine, model, effort = pick.engine, pick.model, effort or pick.effort
+            reason = pick.reason
+        engine = engine or orch.engine
         try:  # disabled or unknown models are refused, never swapped
             model_registry.check(self.db, engine, model, strict=True)
         except model_registry.ModelDisabled as exc:
@@ -363,19 +394,136 @@ class OrchestrationManager(QObject):
             work = target
         title = " ".join((title or instructions).split())[:60]
         task = self.db.add_task(oid, engine, model, effort, title, instructions.strip(), str(work))
-        if resumed:
-            sid = resumed.id
-            self.db.update_session(sid, parent_id=orch.session_id, model=model, effort=effort)
-        else:
-            sid = self.db.create_session(orch.project_id, engine, model, effort, parent_id=orch.session_id,
-                                         title=title, cwd=str(work)).id
+        self.db.update_task(task.id, pick_reason=reason or "Chosen by the planner", auto_picked=int(auto))
+        sid = self.db.create_session(orch.project_id, engine, model, effort, parent_id=orch.session_id,
+                                     title=title, cwd=str(work)).id
         self.db.update_task(task.id, session_id=sid)
         self._events[task.id] = asyncio.Event()
+        mode = self.db.get_setting("orchestrate.confirm", "countdown")
+        if resumed:  # reuse card: Use it / Start fresh / Pick another
+            cands = find_sessions(self.db, instructions, orch.project_id, exclude={sid}, limit=5)
+            self._propose(task.id, {"kind": "reuse", "session_id": resumed.id, "candidates": cands}, mode)
+        elif auto and mode == "always_ask":  # the user confirms the automatic pick
+            self._propose(task.id, {"kind": "pick"}, mode)
         self.mgr.session_updated.emit(sid)
         self.pump(oid)
         t = self.db.task(task.id)
-        return {"task_id": t.id, "status": t.status, "engine": engine, "model": model, "effort": effort,
-                "note": "Running in the background. Call wait_for([task_id]) to get its report."}
+        res = {"task_id": t.id, "status": t.status, "engine": t.engine, "model": t.model, "effort": t.effort,
+               "pick_reason": t.pick_reason,
+               "note": "Running in the background. Call wait_for([task_id]) to get its report."}
+        if t.status == "proposed":
+            res["note"] = ("Waiting for the user to confirm on the board (reuse or model pick); it then starts "
+                           "on its own. Call wait_for([task_id]) as usual.")
+        return res
+
+    # ---- reuse / pick proposals
+    def resolve_session(self, ref: str):
+        ref = (ref or "").strip()
+        m = re.fullmatch(r"(?:s:)?(\d+)", ref)
+        if m:
+            return self.db.session(int(m.group(1)))
+        return next((s for s in (self.db.session_by_engine_id(e, ref) for e in ENGINES) if s), None)
+
+    def _propose(self, tid: int, proposal: dict, mode: str) -> None:
+        if mode == "countdown":
+            proposal["deadline"] = time.time() + COUNTDOWN_SEC
+            loop = asyncio.get_event_loop()
+            loop.call_later(COUNTDOWN_SEC, lambda: self._auto_accept(tid))
+        self.db.update_task(tid, status="proposed", proposal=proposal)
+
+    def _auto_accept(self, tid: int) -> None:
+        t = self.db.task(tid)
+        if t and t.status == "proposed" and (t.proposal or {}).get("deadline"):
+            self.resolve_proposal(tid, "accept")
+
+    def resolve_proposal(self, tid: int, action: str, session_id: int | None = None) -> None:
+        """action: accept (use the proposed chat / pick) | fresh (new chat) | pick (continue `session_id`)."""
+        t = self.db.task(tid)
+        if not t or t.status != "proposed":
+            return
+        prop = t.proposal or {}
+        target = None
+        if prop.get("kind") == "reuse":
+            if action == "accept":
+                target = prop.get("session_id")
+            elif action == "pick":
+                target = session_id
+        if target:
+            s = self.db.session(int(target))
+            orch = self.db.orchestration(t.orchestration_id)
+            if s and orch:
+                model, effort = t.model, t.effort
+                if s.engine != t.engine or not model_registry.is_allowed(self.db, s.engine, model or "", strict=True):
+                    keep = s.model if model_registry.is_allowed(self.db, s.engine, s.model or "", strict=True) else None
+                    d = (keep, s.effort) if keep else model_registry.default(self.db, s.engine)
+                    if not d:
+                        self._finish(tid, "failed", {"status": "failed", "summary": model_registry.unavailable_message(
+                            s.engine), "files_changed": [], "open_questions": []})
+                        return
+                    model, effort = d
+                old = t.session_id
+                self.db.update_session(s.id, parent_id=orch.session_id, model=model, effort=effort)
+                self.db.update_task(tid, session_id=s.id, engine=s.engine, model=model, effort=effort, reused=1,
+                                    pick_reason=f"Continues “{s.title}” ({ENGINES.get(s.engine, s.engine)})")
+                if old and old != s.id and not self.db.messages(old):
+                    self.db.delete_session(old)
+        self.db.update_task(tid, status="queued", proposal=None)
+        self.task_changed.emit(t.orchestration_id, tid)
+        self.pump(t.orchestration_id)
+
+    def change_pick(self, tid: int, engine: str, model: str, effort: str) -> None:
+        """User override on the card before the task starts."""
+        t = self.db.task(tid)
+        if not t or t.status not in ("proposed", "queued"):
+            return
+        model_registry.check(self.db, engine, model, strict=True)
+        self.db.update_task(tid, engine=engine, model=model, effort=effort, auto_picked=0,
+                            pick_reason=f"Changed by you: {model_registry.label(self.db, engine, model)} · {effort}")
+        if t.session_id and not self.db.messages(t.session_id):
+            self.db.update_session(t.session_id, engine=engine, model=model, effort=effort)
+        self.task_changed.emit(t.orchestration_id, tid)
+        self.changed.emit(t.orchestration_id)
+
+    # ---- find_sessions / ask_user
+    def find(self, oid: int, query: str, project: str = "") -> dict[str, Any]:
+        orch = self.db.orchestration(oid)
+        pid = orch.project_id if orch else None
+        if project:
+            p = next((p for p in self.db.projects() if p.name.lower() == project.lower()), None)
+            pid = p.id if p else pid
+        own = {t.session_id for t in self.db.tasks(oid) if t.session_id}
+        res = find_sessions(self.db, query, pid, exclude=own)
+        return {"candidates": res, "note": ("Pass a session_ref as resume_session_id to delegate to continue it."
+                                            if res else "No earlier chat matches; start fresh.")}
+
+    async def ask(self, oid: int, question: str, options: list[str], qid: int, timeout: float) -> dict[str, Any]:
+        q = self.db.question(qid) if qid else None
+        if q and q.orchestration_id != oid:
+            q = None
+        if q is None:
+            if not question.strip():
+                raise OrchestrationError("question is empty.")
+            q = self.db.add_question(oid, question.strip(), [str(o) for o in options][:6])
+            self.question_asked.emit(oid, q.id)
+            self.changed.emit(oid)
+        ev = self._answers.setdefault(q.id, asyncio.Event())
+        if q.answer is None:
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=max(0.0, min(timeout, WAIT_LIMIT)))
+            except asyncio.TimeoutError:
+                pass
+        q = self.db.question(q.id)
+        if q.answer is None:
+            return {"answered": False, "question_id": q.id}
+        return {"answered": True, "question_id": q.id, "answer": q.answer}
+
+    def answer(self, qid: int, text: str) -> None:
+        q = self.db.question(qid)
+        if not q or q.answer is not None or not text.strip():
+            return
+        self.db.answer_question(qid, text.strip())
+        self._answers.setdefault(qid, asyncio.Event()).set()
+        self.changed.emit(q.orchestration_id)
 
     def pump(self, oid: int) -> None:
         """Start queued tasks while under the orchestration's max parallel."""
@@ -401,7 +549,15 @@ class OrchestrationManager(QObject):
             self.db.update_session(sid, cwd=work)
         self.mgr.run_options[sid] = {"claude_mode": "acceptEdits", "sandbox": "workspace-write"}
         first = not self.db.messages(sid)
-        prompt = (SUBAGENT_INTRO + t.instructions if first else t.instructions) + CLOSING
+        follow = self._retry_text.pop(t.id, None)
+        if first:
+            prompt = SUBAGENT_INTRO + t.instructions + CLOSING
+        elif follow:
+            prompt = follow + CLOSING
+        elif t.reused:  # continuing an earlier chat: it has context, send just the task
+            prompt = "New task from the orchestrator:\n" + t.instructions + CLOSING
+        else:
+            prompt = t.instructions + CLOSING
         if not self.mgr.send(sid, prompt):
             self._finish(t.id, "failed", {"status": "failed", "summary": "Could not start the sub-agent "
                                           "(its model may be disabled, or the chat is busy).",
@@ -468,7 +624,34 @@ class OrchestrationManager(QObject):
                 self._finish(t.id, "stopped", rep)
             else:
                 rep = build_report(self.db, sid, status)
+                if rep["status"] == "failed" and self._escalate(t, rep):
+                    return
+                if t.escalated:
+                    rep["escalated"] = t.pick_reason
                 self._finish(t.id, "failed" if rep["status"] == "failed" else "done", rep)
+
+    def _escalate(self, t: Task, rep: dict) -> bool:
+        """An automatically picked task failed: retry once, same chat, more effort or a stronger model."""
+        if t.escalated or not t.auto_picked or not self.db.get_setting("orchestrate.escalate", True):
+            return False
+        orch = self.db.orchestration(t.orchestration_id)
+        if not orch or orch.status != "running":
+            return False
+        pick = routing.escalate(self.db, t.engine, t.model or "", t.effort or "")
+        if not pick:
+            return False
+        self.db.update_task(t.id, model=pick.model, effort=pick.effort, escalated=1, pick_reason=pick.reason,
+                            status="queued")
+        self.db.update_session(t.session_id, model=pick.model, effort=pick.effort)
+        follow = ("Your previous attempt did not succeed: " + (rep.get("summary") or "no details") +
+                  "\nTry again and finish the task.")
+        self.db.update_task(t.id, instructions=t.instructions + "\n\n" + follow)
+        self._retry_text[t.id] = follow
+        self.task_changed.emit(t.orchestration_id, t.id)
+        # The failed turn is still finishing (its final status is emitted from inside it): start the
+        # retry on the next loop pass, when the chat is free again.
+        asyncio.get_event_loop().call_soon(self.pump, t.orchestration_id)
+        return True
 
     def _finish(self, tid: int, status: str, result: dict) -> None:
         t = self.db.task(tid)
@@ -493,7 +676,14 @@ class OrchestrationManager(QObject):
         info: dict[str, Any] = {
             "task_id": t.id, "title": t.title, "engine": t.engine, "model": t.model, "effort": t.effort,
             "status": t.status, "elapsed_sec": round(end - t.started_at) if t.started_at else 0,
+            "pick_reason": t.pick_reason,
         }
+        if t.reused:
+            info["reused"] = True
+        if t.escalated:
+            info["escalated"] = True
+        if t.status == "proposed":
+            info["note"] = "Waiting for the user to confirm on the board."
         if t.worktree:
             info["worktree"] = t.worktree
             info["branch"] = f"orchestrator/task-{t.id}"

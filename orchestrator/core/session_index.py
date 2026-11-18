@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from orchestrator.core import indexer as ix
-from orchestrator.storage.db import Database
+from orchestrator.storage.db import Database, app_dir
 
 POLL_MS = 8000
 
@@ -91,7 +91,8 @@ class SessionIndexer(QObject):
                 best = p
         if best:
             return best.id
-        if ix.norm_path(cwd).startswith(self._temp) or not Path(cwd).is_absolute():
+        if (ix.norm_path(cwd).startswith(self._temp) or ix.norm_path(cwd).startswith(ix.norm_path(str(app_dir())))
+                or not Path(cwd).is_absolute()):
             return None  # throwaway scratch folders: don't clutter the sidebar
         return self.db.add_project(cwd, auto=True).id
 
