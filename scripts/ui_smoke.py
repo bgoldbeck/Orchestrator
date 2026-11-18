@@ -33,6 +33,7 @@ async def wait_status(mgr, sid: int, timeout: float = 240) -> str:
 
 
 async def scenario(app, win, db, mgr, args) -> int:
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     sandbox = ROOT / "spikes" / "sandbox"
@@ -57,9 +58,10 @@ async def scenario(app, win, db, mgr, args) -> int:
     st = await wait_status(mgr, s.id)
     first = db.session(s.id).engine_session_id
     print("turn1:", st, "engine_session_id:", first)
-    if args.engine == "claude":
+    if args.expect_auth_error:
         msgs = db.messages(s.id)
         print("messages:", [(m["kind"], m.get("text", "")[:80]) for m in msgs])
+        ok = st == "error" and any(m.get("level") == "auth" for m in msgs)
     else:
         ask("What word did you just say? Answer with one word.")
         st2 = await wait_status(mgr, s.id)
@@ -68,10 +70,31 @@ async def scenario(app, win, db, mgr, args) -> int:
         print("turn2:", st2, "same session:", first == second, "assistant texts:", texts)
         ok = st == st2 == "done" and first == second and len(texts) >= 2 and "PING" in texts[-1].upper()
         if args.rich:
+            approvals = []
+
+            def auto_allow(_sid, req, _fut):
+                approvals.append(req.tool)
+
+                def click():
+                    from orchestrator.ui.chat_widgets import ApprovalCard
+                    cards = chat.column.findChildren(ApprovalCard)
+                    if cards:
+                        cards[-1].allow.click()
+                QTimer.singleShot(600, click)
+
+            mgr.approval_requested.connect(auto_allow)
             ask("Run a shell command to list the files in this folder, then reply with a one-line summary "
                 "and a tiny Python hello-world function in a fenced code block.")
             st3 = await wait_status(mgr, s.id)
-            print("turn3:", st3)
+            tools = [m for m in db.messages(s.id) if m["kind"] == "tool"]
+            print("turn3:", st3, "approvals:", approvals, "tool results:", [(t["name"], t["is_error"]) for t in tools])
+            ok = ok and st3 == "done" and bool(tools)
+            if args.engine == "claude":
+                ask("Create a file named approval_test.txt containing the word ok. Then say done.")
+                st4 = await wait_status(mgr, s.id)
+                made = (sandbox / "approval_test.txt").exists()
+                print("turn4:", st4, "approvals:", approvals, "file created:", made)
+                ok = ok and st4 == "done" and bool(approvals) and made
     await asyncio.sleep(1.0)
     if args.shot:
         out = ROOT / args.shot
@@ -94,6 +117,7 @@ def main() -> int:
     ap.add_argument("--engine", default="codex")
     ap.add_argument("--shot", default="")
     ap.add_argument("--rich", action="store_true")
+    ap.add_argument("--expect-auth-error", action="store_true")
     ap.add_argument("--settings-shot", default="")
     args = ap.parse_args()
     os.environ.setdefault("ORCHESTRATOR_HOME", tempfile.mkdtemp(prefix="orch-smoke-"))
