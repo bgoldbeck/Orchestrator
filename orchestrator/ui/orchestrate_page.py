@@ -2,13 +2,28 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import (
+    Action,
     BodyLabel,
+    DropDownPushButton,
+    HyperlinkButton,
+    IconWidget,
+    RoundMenu,
     LineEdit,
     MessageBoxBase,
     PillPushButton,
@@ -24,18 +39,18 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     SmoothScrollArea,
-    SpinBox,
     StrongBodyLabel,
     TransparentPushButton,
     TransparentToolButton,
 )
 
-from orchestrator.core import model_registry
+from orchestrator.core import model_registry, project_pick
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.orchestration import ACTIVE, OrchestrationError, OrchestrationManager, strip_report
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database, Orchestration, Task
 from orchestrator.ui.chat_view import ModelPill
+from orchestrator.ui.number_box import NumberBox
 from orchestrator.ui.theme import STATUS_COLORS, engine_badge, palette
 from orchestrator.ui_text import relative, usage_text
 
@@ -56,9 +71,9 @@ def fmt_elapsed(sec: float) -> str:
     return f"{sec // 3600}h {(sec % 3600) // 60:02d}m"
 
 
-def status_pill(status: str, parent: QWidget) -> QLabel:
+def status_pill(status: str, parent: QWidget, label: str | None = None) -> QLabel:
     col = TASK_COLORS.get(status, "#888")
-    lb = QLabel(f"●  {TASK_LABELS.get(status, status)}", parent)
+    lb = QLabel(f"●  {label or TASK_LABELS.get(status, status)}", parent)
     lb.setObjectName("statusPill")
     lb.setStyleSheet(f"QLabel#statusPill {{ color:{col}; background:transparent; border:1px solid {col};"
                      f" border-radius:9px; padding:1px 9px; font-size:8.5pt; }}")
@@ -99,7 +114,9 @@ class TaskCard(QFrame):
         self.sub.setStyleSheet(f"color:{p['muted']};")
         col.addWidget(self.sub)
         top.addLayout(col, 1)
-        top.addWidget(status_pill(t.status, self), 0, Qt.AlignTop)
+        pos = page.qpos.get(t.id)
+        top.addWidget(status_pill(t.status, self, f"Queued (#{pos})" if t.status == "queued" and pos else None),
+                      0, Qt.AlignTop)
         lay.addLayout(top)
 
         if t.pick_reason:
@@ -180,9 +197,25 @@ class TaskCard(QFrame):
             self.pick.set_value(t.engine, t.model or "", t.effort or "", locked=bool(t.reused))
             self.pick.setToolTip("Change the engine, model or effort before it starts")
             self.pick.changed.connect(lambda e, m, ef: self._change(e, m, ef))
-            btns.addWidget(self.pick)
+            prow = QHBoxLayout()
+            prow.setContentsMargins(26, 0, 0, 0)
+            prow.addWidget(self.pick)
+            prow.addStretch(1)
+            lay.addLayout(prow)
+        if t.status == "queued" and t.id in page.qpos:
+            up = TransparentToolButton(FIF.UP, self)
+            up.setToolTip("Move earlier in the queue")
+            up.clicked.connect(lambda: page.om.move_task(self.tid, -1))
+            down = TransparentToolButton(FIF.DOWN, self)
+            down.setToolTip("Move later in the queue")
+            down.clicked.connect(lambda: page.om.move_task(self.tid, +1))
+            up.setEnabled(page.qpos[t.id] > 1)
+            down.setEnabled(page.qpos[t.id] < len(page.qpos))
+            btns.addWidget(up)
+            btns.addWidget(down)
         if t.status in ACTIVE:
-            stop = TransparentPushButton(FIF.PAUSE, "Stop", self)
+            stop = TransparentPushButton(FIF.CLOSE if t.status == "queued" else FIF.PAUSE,
+                                         "Cancel" if t.status == "queued" else "Stop", self)
             stop.clicked.connect(lambda: asyncio.ensure_future(page.om.stop_task(self.tid)))
             btns.addWidget(stop)
         else:
@@ -265,7 +298,9 @@ class TaskCard(QFrame):
         u = usage_text(self.page.db.usage(t.session_id), short=True) if t.session_id else ""
         self.sub.setText(f"{model_line(self.page.db, t.engine, t.model, t.effort)}  ·  {el}" + (f"  ·  {u}" if u else ""))
         if t.status in ("running", "waiting", "queued") and t.session_id:
-            line = self.page.om.last_line(t.session_id) if t.status != "queued" else "Waiting for a free slot"
+            pos = self.page.qpos.get(t.id)
+            line = (self.page.om.last_line(t.session_id) if t.status != "queued" else
+                    f"Waiting for a free slot · #{pos} in the queue" if pos else "Waiting for a free slot")
             self.last.setText(line or "Starting…")
         pend = self.page.pending.get(t.session_id or -1)
         if pend and not pend[1].done():
@@ -321,6 +356,7 @@ class PickSessionDialog(MessageBoxBase):
 
 class OrchestratePage(SmoothScrollArea):
     openChat = Signal(int)
+    projectsChanged = Signal()
 
     def __init__(self, db: Database, mgr: SessionManager, om: OrchestrationManager, parent: QWidget | None = None):
         super().__init__(parent)
@@ -328,6 +364,9 @@ class OrchestratePage(SmoothScrollArea):
         self.current: int | None = None  # orchestration id shown on the board
         self.pending: dict[int, tuple] = {}  # session id -> (NeedsApproval, future)
         self.cards: dict[int, TaskCard] = {}
+        self.qpos: dict[int, int] = {}  # task id -> place in the global queue
+        self.runner = None  # ScheduleRunner, set by the main window (Run later / Repeat)
+        self._auto_choice = None  # ProjectMatch shown in the "Working in" line
         self.setObjectName("orchestratePage")
         self.setWidgetResizable(True)
         self.setStyleSheet("QScrollArea { background:transparent; border:none; }")
@@ -347,13 +386,20 @@ class OrchestratePage(SmoothScrollArea):
         p = palette()
 
         head = QHBoxLayout()
+        tcol = QVBoxLayout()
+        tcol.setSpacing(2)
         title = QLabel("Orchestrate", self.column)
         f = QFont("Georgia")
         f.setStyleHint(QFont.Serif)
         f.setPointSize(26)
         title.setFont(f)
         title.setStyleSheet(f"color:{p['text']}; background:transparent;")
-        head.addWidget(title)
+        tcol.addWidget(title)
+        explain = CaptionLabel("An orchestration is one goal: a planner splits it into tasks and hands them to "
+                               "Claude or Codex sub-agents, then reports back.", self.column)
+        explain.setWordWrap(True)
+        explain.setStyleSheet(f"color:{p['muted']};")
+        head.addLayout(tcol)
         head.addStretch(1)
         self.project = ComboBox(self.column)
         self.project.setMinimumWidth(200)
@@ -363,10 +409,35 @@ class OrchestratePage(SmoothScrollArea):
         self.history.setMinimumWidth(260)
         self.history.currentIndexChanged.connect(self._history_changed)
         head.addWidget(self.history)
-        self.newRun = PushButton(FIF.ADD, "New run", self.column)
+        self.newRun = PushButton(FIF.ADD, "New orchestration", self.column)
+        self.newRun.setToolTip("Start another goal (this one keeps running)")
         self.newRun.clicked.connect(lambda: self.history.setCurrentIndex(0))
         head.addWidget(self.newRun)
         lay.addLayout(head)
+        lay.addWidget(explain)
+
+        # no projects yet: explain what a project is, with the button right here
+        self.noProjects = QFrame(self.column)
+        self.noProjects.setObjectName("noProjects")
+        self.noProjects.setStyleSheet(f"#noProjects {{ background:{p['card']}; border:1px solid {p['border']}; border-radius:14px; }}")
+        npl = QVBoxLayout(self.noProjects)
+        npl.setContentsMargins(24, 28, 24, 28)
+        npl.setSpacing(8)
+        ic = IconWidget(FIF.FOLDER_ADD, self.noProjects)
+        ic.setFixedSize(36, 36)
+        npl.addWidget(ic, 0, Qt.AlignHCenter)
+        npl.addWidget(StrongBodyLabel("Add a project to start", self.noProjects), 0, Qt.AlignHCenter)
+        nps = BodyLabel("A project is just a folder on your computer, like a code repository. The planner and its "
+                        "sub-agents read and change files inside it.", self.noProjects)
+        nps.setWordWrap(True)
+        nps.setAlignment(Qt.AlignCenter)
+        nps.setStyleSheet(f"color:{p['muted']};")
+        npl.addWidget(nps)
+        self.addProjectBtn = PrimaryPushButton(FIF.FOLDER_ADD, "Add project folder", self.noProjects)
+        self.addProjectBtn.clicked.connect(self.add_project)
+        npl.addWidget(self.addProjectBtn, 0, Qt.AlignHCenter)
+        self.noProjects.hide()
+        lay.addWidget(self.noProjects)
 
         # composer
         self.composer = QFrame(self.column)
@@ -392,12 +463,16 @@ class OrchestratePage(SmoothScrollArea):
         self.autoPlanner.toggled.connect(self._auto_toggled)
         row.addWidget(self.autoPlanner)
         row.addSpacing(8)
-        row.addWidget(CaptionLabel("Max parallel", self.composer))
-        self.maxPar = SpinBox(self.composer)
+        row.addWidget(BodyLabel("Run up to", self.composer))
+        self.maxPar = NumberBox(self.composer)
+        self.maxPar.setObjectName("maxParallel")
+        self.maxPar.setToolTip("How many of this goal's tasks may run at the same time. The rest wait in a queue. "
+                               "The whole app also has a limit (Settings › Orchestrator).")
         self.maxPar.setRange(1, 8)
         self.maxPar.setValue(int(db.get_setting("orchestrate.max_parallel", 4)))
         self.maxPar.valueChanged.connect(lambda v: db.set_setting("orchestrate.max_parallel", int(v)))
         row.addWidget(self.maxPar)
+        row.addWidget(BodyLabel("tasks at once", self.composer))
         self.worktrees = CheckBox("Git worktree per task", self.composer)
         self.worktrees.setToolTip("When two sub-agents write in the same git repo at once, give each its own "
                                   "worktree and branch (orchestrator/task-N). Off by default.")
@@ -405,10 +480,52 @@ class OrchestratePage(SmoothScrollArea):
         self.worktrees.toggled.connect(lambda v: db.set_setting("orchestrate.worktrees", bool(v)))
         row.addWidget(self.worktrees)
         row.addStretch(1)
-        self.startBtn = PrimaryPushButton(FIF.PLAY, "Start", self.composer)
+        cl.addLayout(row)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.startBtn = PrimaryPushButton(FIF.PLAY, "Run now", self.composer)
         self.startBtn.clicked.connect(self._start)
+        self.laterBtn = DropDownPushButton(FIF.DATE_TIME, "Later", self.composer)
+        later = RoundMenu(parent=self.laterBtn)
+        later.addAction(Action(FIF.HISTORY, "Run once later…", triggered=lambda: self._schedule("once")))
+        later.addAction(Action(FIF.SYNC, "Repeat…", triggered=lambda: self._schedule("repeat")))
+        self.laterBtn.setMenu(later)
+        for b in (self.startBtn, self.laterBtn):
+            b.setMinimumWidth(b.sizeHint().width())
+        # Auto project: where this goal will run, and why
+        self.whereRow = QWidget(self.composer)
+        wr = QHBoxLayout(self.whereRow)
+        wr.setContentsMargins(0, 0, 0, 0)
+        wr.setSpacing(6)
+        self.whereLabel = CaptionLabel("", self.whereRow)
+        self.whereLabel.setObjectName("whereLabel")
+        self.whereLabel.setWordWrap(True)
+        self.whereLabel.setStyleSheet(f"color:{p['muted']};")
+        self.whereChange = HyperlinkButton("", "Change", self.whereRow)
+        self.whereChange.clicked.connect(self._change_project_menu)
+        wr.addWidget(self.whereLabel)
+        wr.addWidget(self.whereChange)
+        wr.addStretch(1)
+        self.whereRow.hide()
+        row.addWidget(self.whereRow, 1)
+        self.whereSpacer = QWidget(self.composer)
+        row.addWidget(self.whereSpacer, 1)
+        row.addWidget(self.laterBtn)
         row.addWidget(self.startBtn)
         cl.addLayout(row)
+        # Auto project unsure: ask with the top matches
+        self.askProject = QFrame(self.composer)
+        self.askProject.setObjectName("askProject")
+        self.askProject.setStyleSheet(f"#askProject {{ background:{p['warn_bg']}; border:1px solid {STATUS_COLORS['waiting']};"
+                                      " border-radius:8px; }")
+        self.askLay = QVBoxLayout(self.askProject)
+        self.askLay.setContentsMargins(12, 8, 8, 8)
+        self.askProject.hide()
+        cl.addWidget(self.askProject)
+        self._where_timer = QTimer(self)
+        self._where_timer.setSingleShot(True)
+        self._where_timer.timeout.connect(self._update_where)
+        self.goal.textChanged.connect(lambda: self._where_timer.start(350))
         self.composerError = CaptionLabel("", self.composer)
         self.composerError.setStyleSheet(f"color:{STATUS_COLORS['error']};")
         self.composerError.hide()
@@ -501,12 +618,16 @@ class OrchestratePage(SmoothScrollArea):
         cur = self.project.currentData()
         self.project.blockSignals(True)
         self.project.clear()
-        for pr in self.db.projects():
-            if not pr.auto:
-                self.project.addItem(pr.name, userData=pr.id)
-        if not self.project.count():
-            self.project.addItem("Add a project first", userData=None)
-        want = cur or self.db.get_setting("orchestrate.project")
+        mine = [pr for pr in self.db.projects() if not pr.auto]
+        if mine:
+            self.project.addItem("Auto (pick from goal)", userData="auto")
+        for pr in mine:
+            self.project.addItem(pr.name, userData=pr.id)
+        has = bool(mine)
+        self.noProjects.setVisible(not has)
+        for w in (self.project, self.history):
+            w.setVisible(has)
+        want = cur or self.db.get_setting("orchestrate.project", "auto")
         self.project.setCurrentIndex(max(0, self.project.findData(want)))
         self.project.blockSignals(False)
         last = self.db.get_setting("orchestrate.planner") or ["claude", *self.db.default_model("claude")]
@@ -519,10 +640,11 @@ class OrchestratePage(SmoothScrollArea):
         pid = self.project.currentData()
         if pid:
             self.db.set_setting("orchestrate.project", pid)
-        runs = self.db.orchestrations(pid) if pid else []
+        auto = pid == "auto"
+        runs = self.db.orchestrations(None if auto else pid) if pid else []
         self.history.blockSignals(True)
         self.history.clear()
-        self.history.addItem("New run", userData=None)
+        self.history.addItem("New orchestration", userData=None)
         for o in runs:
             g = " ".join(o.goal.split())
             self.history.addItem(f"{g[:38] + '…' if len(g) > 38 else g}  ·  {relative(o.created_at)}", userData=o.id)
@@ -536,10 +658,134 @@ class OrchestratePage(SmoothScrollArea):
 
     def show_run(self, oid: int | None) -> None:
         self.current = oid
-        self.composer.setVisible(oid is None)
-        self.newRun.setVisible(oid is not None)
+        has = self.project.currentData() is not None
+        self.composer.setVisible(oid is None and has)
+        self.newRun.setVisible(oid is not None and has)
         self.composerError.hide()
+        self.askProject.hide()
+        self._update_where()
         self.render_board()
+
+    # ---- projects
+    def add_project(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Choose a project folder")
+        if not path:
+            return
+        pr = self.db.add_project(path, os.path.basename(os.path.normpath(path)) or path)
+        self.db.set_setting("orchestrate.project", pr.id)
+        self.projectsChanged.emit()
+        self.reload()
+
+    def _update_where(self) -> None:
+        """Auto project: show where the goal will run (or that the app will ask)."""
+        self._auto_choice = None
+        if self.project.currentData() != "auto" or self.current is not None:
+            self._where_visible(False)
+            return
+        goal = self.goal.toPlainText().strip()
+        if not goal:
+            self.whereLabel.setText("Working in: picked from the goal when you run it.")
+            self.whereChange.setText("Choose")
+            self._where_visible(True)
+            return
+        best, _m = self._auto_best(goal)
+        if best:
+            self._auto_choice = best
+            self.whereLabel.setText(f"Working in: {best.project.name} — because {best.reason}")
+            self.whereChange.setText("Change")
+        else:
+            self.whereLabel.setText("Working in: not sure yet. I'll ask which project when you run it.")
+            self.whereChange.setText("Choose")
+        self._where_visible(True)
+
+    def _where_visible(self, on: bool) -> None:
+        self.whereRow.setVisible(on)
+        self.whereSpacer.setVisible(not on)
+
+    def _change_project_menu(self) -> None:
+        menu = RoundMenu(parent=self)
+        for pr in self.db.projects():
+            if pr.auto:
+                continue
+            menu.addAction(Action(FIF.FOLDER, pr.name, triggered=lambda _=False, i=pr.id: self._set_project(i)))
+        menu.addSeparator()
+        menu.addAction(Action(FIF.FOLDER_ADD, "Browse folder…", triggered=self.add_project))
+        menu.exec(self.whereChange.mapToGlobal(self.whereChange.rect().bottomLeft()))
+
+    def _set_project(self, pid: int) -> None:
+        self.project.setCurrentIndex(max(0, self.project.findData(pid)))
+
+    def _ask_project(self, matches, then) -> None:
+        """Low confidence: ask which project, with the top 3 and Browse folder."""
+        while self.askLay.count():
+            it = self.askLay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+            elif it.layout():
+                lay = it.layout()
+                while lay.count():
+                    x = lay.takeAt(0).widget()
+                    if x:
+                        x.deleteLater()
+        head = CaptionLabel("WHICH PROJECT?", self.askProject)
+        head.setStyleSheet(f"color:{STATUS_COLORS['waiting']}; font-weight:600;")
+        self.askLay.addWidget(head)
+        txt = BodyLabel("I couldn't tell from the goal which folder this is for." if matches else
+                        "No project matched the goal. Pick one or browse to a folder.", self.askProject)
+        txt.setWordWrap(True)
+        self.askLay.addWidget(txt)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        options = [m.project for m in matches[:3]] or [p for p in self.db.projects() if not p.auto][:3]
+        for pr in options:
+            b = PillPushButton(pr.name, self.askProject)
+            b.setToolTip(pr.path)
+            b.clicked.connect(lambda _=False, i=pr.id: (self.askProject.hide(), then(i, "you picked it")))
+            row.addWidget(b)
+        browse = PushButton(FIF.FOLDER, "Browse folder…", self.askProject)
+
+        def pick_folder() -> None:
+            path = QFileDialog.getExistingDirectory(self, "Choose a project folder")
+            if path:
+                pr = self.db.add_project(path, os.path.basename(os.path.normpath(path)) or path)
+                self.projectsChanged.emit()
+                self.askProject.hide()
+                then(pr.id, "you picked the folder")
+
+        browse.clicked.connect(pick_folder)
+        row.addWidget(browse)
+        row.addStretch(1)
+        cancel = TransparentPushButton("Cancel", self.askProject)
+        cancel.clicked.connect(self.askProject.hide)
+        row.addWidget(cancel)
+        self.askLay.addLayout(row)
+        self.askProject.show()
+
+    def _resolve_project(self, then) -> None:
+        """Calls then(project_id, reason) now, or after asking the user (Auto and unsure)."""
+        pid = self.project.currentData()
+        if pid != "auto":
+            then(pid, None)
+            return
+        goal = self.goal.toPlainText().strip()
+        if not goal:
+            self.composerError.setText("Write a goal first.")
+            self.composerError.show()
+            return
+        best, matches = self._auto_best(goal)
+        if best:
+            then(best.project.id, best.reason)
+        else:
+            self._ask_project(matches, then)
+
+    def _auto_best(self, goal: str):
+        matches = project_pick.rank_projects(self.db, goal)
+        best = project_pick.confident(matches)
+        mine = [p for p in self.db.projects() if not p.auto]
+        if not best and len(mine) == 1:  # only one project: nothing to choose between
+            best = project_pick.ProjectMatch(mine[0], 0.0, "it's your only project")
+        return best, matches
 
     def render_board(self) -> None:
         for c in self.cards.values():
@@ -554,12 +800,14 @@ class OrchestratePage(SmoothScrollArea):
             self.emptyBoard.hide()
             return
         tasks = self.db.tasks(orch.id)
+        self.qpos = self.om.queue_positions()
         self._render_planner(orch)
         n_act = sum(1 for t in tasks if t.status in ACTIVE)
         self._q_shown = ()  # questions box is rebuilt with the strip
         n_done = sum(1 for t in tasks if t.status == "done")
-        self.boardHead.setText(f"SUB-AGENTS  ·  {len(tasks)} tasks  ·  {n_act} active  ·  {n_done} done  ·  "
-                               f"max {orch.max_parallel} at once")
+        n_q = sum(1 for t in tasks if t.status == "queued")
+        self.boardHead.setText(f"SUB-AGENTS  ·  {len(tasks)} tasks  ·  {n_act - n_q} active  ·  {n_q} queued  ·  "
+                               f"{n_done} done  ·  up to {orch.max_parallel} at once")
         self.emptyBoard.setVisible(not tasks)
         if not tasks and orch.status != "running":
             self.emptyBoard.setText("This run ended without delegating any tasks. Open the planner chat for details.")
@@ -598,8 +846,14 @@ class OrchestratePage(SmoothScrollArea):
                                 + (f"  ·  run total {u}" if u else ""))
         self.stopAll.setEnabled(self.om.is_active(orch.id))
         self.plannerLast.setText(self._planner_line(orch))
-        self.plannerWhy.setText(orch.pick_reason or "")
-        self.plannerWhy.setVisible(bool(orch.pick_reason))
+        proj = self.db.project(orch.project_id)
+        why = []
+        if proj:
+            why.append(f"Working in {proj.name}" + (f" — because {orch.project_reason}" if orch.project_reason else ""))
+        if orch.pick_reason:
+            why.append(orch.pick_reason)
+        self.plannerWhy.setText("\n".join(why))
+        self.plannerWhy.setVisible(bool(why))
         self._render_questions(orch)
 
     def _render_questions(self, orch: Orchestration) -> None:
@@ -703,14 +957,17 @@ class OrchestratePage(SmoothScrollArea):
 
     # ---- actions
     def _start(self) -> None:
-        pid = self.project.currentData()
+        self.composerError.hide()
+        self._resolve_project(self._start_in)
+
+    def _start_in(self, pid: int, project_reason: str | None) -> None:
         goal = self.goal.toPlainText().strip()
         try:
             if self.autoPlanner.isChecked():
-                o = self.om.start(pid or 0, goal, "auto", "", "", self.maxPar.value())
+                o = self.om.start(pid or 0, goal, "auto", "", "", self.maxPar.value(), project_reason=project_reason)
             else:
                 o = self.om.start(pid or 0, goal, self.pill.engine, self.pill.model, self.pill.effort,
-                                  self.maxPar.value())
+                                  self.maxPar.value(), project_reason=project_reason)
         except OrchestrationError as exc:
             self.composerError.setText(str(exc))
             self.composerError.show()
@@ -719,6 +976,37 @@ class OrchestratePage(SmoothScrollArea):
         self.goal.clear()
         self.current = o.id
         self._project_changed()
+
+    def _schedule(self, kind: str) -> None:
+        """Run once later / Repeat: save it as a scheduled orchestration (the Schedules page lists it)."""
+        if self.runner is None:
+            InfoBar.warning("Schedules are off", "The scheduler is not running in this window.", parent=self.window(),
+                            position=InfoBarPosition.TOP_RIGHT, duration=4000)
+            return
+        goal = self.goal.toPlainText().strip()
+        if not goal:
+            self.composerError.setText("Write a goal first.")
+            self.composerError.show()
+            return
+        self._resolve_project(lambda pid, why: self._schedule_in(kind, pid, goal))
+
+    def _schedule_in(self, kind: str, pid: int, goal: str) -> None:
+        dlg = OrchestrationScheduleDialog(kind, goal, self.window())
+        if not dlg.exec():
+            return
+        data = {"name": "Orchestrate · " + " ".join(goal.split())[:40], "project_id": pid, "prompt": goal,
+                "engine": self.pill.engine, "model": self.pill.model, "effort": self.pill.effort,
+                "new_or_resume": "new", "permission": "read-only", "missed": "run_once", "enabled": True,
+                "target": "orchestration",
+                "options": {"max_parallel": self.maxPar.value(), "auto_planner": self.autoPlanner.isChecked()}}
+        data.update(dlg.schedule_fields())
+        sid = self.db.save_schedule(data)
+        s = self.db.schedule(sid)
+        self.runner.sync(s)
+        self.runner.changed.emit()
+        self.goal.clear()
+        InfoBar.success("Scheduled", f"{dlg.summary()}. It's listed on the Schedules page.", parent=self.window(),
+                        position=InfoBarPosition.TOP_RIGHT, duration=5000)
 
     def _auto_toggled(self, on: bool) -> None:
         self.db.set_setting("orchestrate.auto_planner", bool(on))
@@ -737,3 +1025,44 @@ class OrchestratePage(SmoothScrollArea):
         super().resizeEvent(e)
         if self.cards:
             self._rebuild_timer.start(80)
+
+
+class OrchestrationScheduleDialog(MessageBoxBase):
+    """When to run an orchestration later: once (time chips / date + time) or on repeat (presets)."""
+
+    def __init__(self, kind: str, goal: str, parent: QWidget) -> None:
+        super().__init__(parent)
+        from orchestrator.core.scheduler import CRON_PRESETS
+        from orchestrator.ui.when_picker import WhenPicker
+
+        self.kind = kind
+        self.viewLayout.addWidget(SubtitleLabel("Run once later" if kind == "once" else "Repeat", self))
+        g = " ".join(goal.split())
+        cap = CaptionLabel(g[:140] + ("…" if len(g) > 140 else ""), self)
+        cap.setWordWrap(True)
+        cap.setStyleSheet(f"color:{palette()['muted']};")
+        self.viewLayout.addWidget(cap)
+        if kind == "once":
+            self.picker = WhenPicker(self)
+            self.viewLayout.addWidget(self.picker)
+        else:
+            self.repeat = ComboBox(self)
+            for label, expr in CRON_PRESETS:
+                if expr != "* * * * *":
+                    self.repeat.addItem(label, userData=expr)
+            self.repeat.setCurrentIndex(max(0, self.repeat.findData("0 8 * * mon-fri")))
+            self.viewLayout.addWidget(self.repeat)
+        self.yesButton.setText("Schedule")
+        self.widget.setMinimumWidth(460)
+
+    def schedule_fields(self) -> dict:
+        if self.kind == "once":
+            return {"kind": "once", "run_at": self.picker.when().timestamp(), "cron": None}
+        return {"kind": "cron", "cron": self.repeat.currentData(), "run_at": None}
+
+    def summary(self) -> str:
+        if self.kind == "once":
+            from orchestrator.core.scheduler import plain_when
+
+            return "Runs " + plain_when(self.picker.when())
+        return "Repeats: " + self.repeat.currentText()

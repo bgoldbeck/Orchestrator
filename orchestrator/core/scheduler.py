@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from orchestrator.core import model_registry
+from orchestrator.core import concurrency, model_registry
 from orchestrator.core.session_manager import POLICIES, SessionManager
 from orchestrator.storage.db import Database, Schedule, app_dir
 from orchestrator.ui_text import short_title
@@ -85,6 +85,43 @@ def quick_times(now: datetime | None = None) -> list[tuple[str, datetime]]:
     return out
 
 
+def when_chips(now: datetime | None = None) -> list[tuple[str, datetime]]:
+    """Chips for 'run once later': In 1 hour, In 5 hours, Tonight 9 PM (if still ahead), Tomorrow 8 AM."""
+    from datetime import timedelta
+
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    out = [("In 1 hour", now + timedelta(hours=1)), ("In 5 hours", now + timedelta(hours=5))]
+    tonight = now.replace(hour=21, minute=0)
+    if tonight - now >= timedelta(minutes=30):
+        out.append(("Tonight 9 PM", tonight))
+    out.append(("Tomorrow 8 AM", (now + timedelta(days=1)).replace(hour=8, minute=0)))
+    return out
+
+
+def _clock(d: datetime) -> str:
+    return d.strftime("%I:%M %p").lstrip("0")
+
+
+def plain_when(dt: datetime, now: datetime | None = None) -> str:
+    """'Today at 6:30 PM, in 5 hours' / 'Tomorrow at 8:00 AM, in 14 hours' / 'Fri, Nov 20 at 9:00 AM, in 3 days'."""
+    now = now or datetime.now()
+    days = (dt.date() - now.date()).days
+    day = {0: "Today", 1: "Tomorrow", -1: "Yesterday"}.get(days, dt.strftime("%a, %b %d").replace(" 0", " "))
+    sec = (dt - now).total_seconds()
+    if sec < -60:
+        rel = "already passed"
+    elif sec < 3600:
+        m = max(1, int(sec / 60 + 0.5))
+        rel = f"in {m} minute{'s' if m != 1 else ''}"
+    elif sec < 48 * 3600:
+        h = int(sec / 3600 + 0.5)
+        rel = f"in {h} hour{'s' if h != 1 else ''}"
+    else:
+        d = int(sec / 86400 + 0.5)
+        rel = f"in {d} days"
+    return f"{day} at {_clock(dt)}, {rel}"
+
+
 def fmt_when(dt: datetime | float | None, now: float | None = None) -> str:
     if dt is None:
         return "—"
@@ -116,7 +153,11 @@ class ScheduleRunner(QObject):
         self.jobs_url = jobs_url or f"sqlite:///{(app_dir() / 'jobs.db').as_posix()}"
         self.scheduler = None
         self._active: dict[int, tuple[int, int]] = {}  # session id -> (schedule id, run id)
+        self._waiting: list[int] = []  # schedule ids that fired while every global slot was busy
+        # set by the main window: start(project_id, goal, engine, model, effort, max_parallel) -> Orchestration
+        self.start_orchestration = None
         mgr.status_changed.connect(self._on_status)
+        concurrency.hub.freed.connect(self._retry_waiting)
         self._heartbeat = QTimer(self)  # nudges APScheduler after sleep/hibernate so missed runs fire on wake
         self._heartbeat.timeout.connect(self._wake)
 
@@ -223,6 +264,13 @@ class ScheduleRunner(QObject):
             rid = self.db.add_run(s.id, None, "skipped", "project no longer exists")
             self.changed.emit()
             return rid
+        if s.target == "orchestration":
+            return self._fire_orchestration(s)
+        if concurrency.free_slots(self.db) <= 0:  # global max parallel reached: start when a slot frees up
+            if s.id not in self._waiting:
+                self._waiting.append(s.id)
+            self.changed.emit()
+            return None
         sid: int | None
         target = self.db.session(s.session_id) if s.new_or_resume == "resume" and s.session_id else None
         engine, model = (target.engine, target.model or "") if target else (s.engine, s.model or "")
@@ -260,6 +308,43 @@ class ScheduleRunner(QObject):
         self.changed.emit()
         return rid
 
+    def _fire_orchestration(self, s: Schedule) -> int | None:
+        """A scheduled orchestration: start it like the Orchestrate page's Run now (tasks then queue under the
+        orchestration's own and the global limits)."""
+        opts = s.options or {}
+        if self.start_orchestration is None:
+            rid = self.db.add_run(s.id, None, "skipped", "orchestrations are not available yet")
+            self.changed.emit()
+            return rid
+        auto = bool(opts.get("auto_planner"))
+        try:
+            orch = self.start_orchestration(s.project_id, s.prompt, "auto" if auto else s.engine,
+                                            "" if auto else (s.model or ""), "" if auto else (s.effort or ""),
+                                            int(opts.get("max_parallel") or 4))
+        except Exception as exc:  # noqa: BLE001 - disabled model, missing project, ...
+            rid = self.db.add_run(s.id, None, "skipped", str(exc))
+            self.run_blocked.emit(s.id, str(exc))
+            self.changed.emit()
+            return rid
+        rid = self.db.add_run(s.id, orch.session_id, note="orchestration")
+        if orch.session_id:
+            self._active[orch.session_id] = (s.id, rid)
+            self.run_started.emit(s.id, orch.session_id)
+        self.changed.emit()
+        return rid
+
+    def waiting(self) -> list[int]:
+        return list(self._waiting)
+
+    def _retry_waiting(self) -> None:
+        while self._waiting and concurrency.free_slots(self.db) > 0:
+            sched_id = self._waiting.pop(0)
+            try:
+                asyncio.ensure_future(self.fire(sched_id))
+            except RuntimeError:  # no running loop (tests): leave it waiting
+                self._waiting.insert(0, sched_id)
+                break
+
     def _on_status(self, sid: int, status: str) -> None:
         if sid not in self._active or status not in ("done", "error", "idle"):
             return
@@ -270,6 +355,7 @@ class ScheduleRunner(QObject):
         self.db.finish_run(rid, final)
         self.run_finished.emit(sched_id, sid, final)
         self.changed.emit()
+        concurrency.slot_freed()
 
     def active_count(self) -> int:
         return len(self._active)

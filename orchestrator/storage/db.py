@@ -83,6 +83,10 @@ MIGRATIONS = [
     ("tasks", "escalated", "INTEGER NOT NULL DEFAULT 0"),
     ("tasks", "proposal_json", "TEXT"),
     ("orchestrations", "pick_reason", "TEXT"),
+    ("tasks", "queue_pos", "REAL"),  # global queue order for queued tasks (lower runs first)
+    ("orchestrations", "project_reason", "TEXT"),  # why Auto picked this project
+    ("schedules", "target", "TEXT NOT NULL DEFAULT 'chat'"),  # chat | orchestration
+    ("schedules", "options_json", "TEXT"),  # orchestration: {"max_parallel": n, "auto_planner": bool}
 ]
 
 
@@ -119,7 +123,7 @@ class Session:
 
 
 SCHEDULE_FIELDS = ("name", "project_id", "prompt", "engine", "model", "effort", "kind", "cron", "run_at",
-                   "new_or_resume", "session_id", "permission", "missed", "enabled")
+                   "new_or_resume", "session_id", "permission", "missed", "enabled", "target", "options_json")
 
 
 @dataclass
@@ -139,6 +143,8 @@ class Schedule:
     permission: str  # read-only | allow-edits | full
     missed: str  # run_once | skip
     enabled: bool
+    target: str = "chat"  # chat | orchestration (prompt = the goal, engine/model/effort = the planner)
+    options: dict | None = None
 
 
 @dataclass
@@ -166,6 +172,7 @@ class Orchestration:
     created_at: float
     finished_at: float | None
     pick_reason: str | None = None
+    project_reason: str | None = None
 
 
 @dataclass
@@ -201,6 +208,7 @@ class Task:
     reused: bool = False
     escalated: bool = False
     proposal: dict | None = None
+    queue_pos: float | None = None
 
 
 @dataclass
@@ -409,7 +417,8 @@ class Database:
     def _sched(r: sqlite3.Row) -> Schedule:
         return Schedule(r["id"], r["name"], r["project_id"], r["prompt"], r["engine"], r["model"], r["effort"],
                         r["kind"], r["cron"], r["run_at"], r["new_or_resume"], r["session_id"], r["permission"],
-                        r["missed"], bool(r["enabled"]))
+                        r["missed"], bool(r["enabled"]), r["target"] or "chat",
+                        json.loads(r["options_json"]) if r["options_json"] else None)
 
     def schedules(self) -> list[Schedule]:
         return [self._sched(r) for r in self.conn.execute("SELECT * FROM schedules ORDER BY name COLLATE NOCASE")]
@@ -419,6 +428,8 @@ class Database:
         return self._sched(r) if r else None
 
     def save_schedule(self, data: dict[str, Any], sched_id: int | None = None) -> int:
+        if "options" in data:
+            data = {**data, "options_json": json.dumps(data["options"]) if data["options"] else None}
         vals = {k: data.get(k) for k in SCHEDULE_FIELDS if k in data}
         if "enabled" in vals:
             vals["enabled"] = int(bool(vals["enabled"]))
@@ -465,7 +476,8 @@ class Database:
     @staticmethod
     def _orch(r: sqlite3.Row) -> Orchestration:
         return Orchestration(r["id"], r["project_id"], r["session_id"], r["goal"], r["engine"], r["model"], r["effort"],
-                             r["max_parallel"], r["status"], r["created_at"], r["finished_at"], r["pick_reason"])
+                             r["max_parallel"], r["status"], r["created_at"], r["finished_at"], r["pick_reason"],
+                             r["project_reason"])
 
     def add_orchestration(self, project_id: int, goal: str, engine: str, model: str, effort: str,
                           max_parallel: int = 4) -> Orchestration:
@@ -500,13 +512,13 @@ class Database:
                     json.loads(r["result_json"]) if r["result_json"] else None,
                     r["created_at"], r["started_at"], r["finished_at"], r["pick_reason"], bool(r["auto_picked"]),
                     bool(r["reused"]), bool(r["escalated"]),
-                    json.loads(r["proposal_json"]) if r["proposal_json"] else None)
+                    json.loads(r["proposal_json"]) if r["proposal_json"] else None, r["queue_pos"])
 
     def add_task(self, oid: int, engine: str, model: str, effort: str, title: str, instructions: str,
                  cwd: str | None = None) -> Task:
         cur = self.conn.execute(
-            "INSERT INTO tasks(orchestration_id,engine,model,effort,title,instructions,cwd,created_at) VALUES(?,?,?,?,?,?,?,?)",
-            (oid, engine, model, effort, title, instructions, cwd, time.time()))
+            "INSERT INTO tasks(orchestration_id,engine,model,effort,title,instructions,cwd,created_at,queue_pos) "
+            "VALUES(?,?,?,?,?,?,?,?,?)", (oid, engine, model, effort, title, instructions, cwd, time.time(), time.time()))
         self.conn.commit()
         return self.task(cur.lastrowid)  # type: ignore[return-value]
 
@@ -516,6 +528,19 @@ class Database:
 
     def tasks(self, oid: int) -> list[Task]:
         return [self._task(r) for r in self.conn.execute("SELECT * FROM tasks WHERE orchestration_id=? ORDER BY id", (oid,))]
+
+    def queued_tasks(self) -> list[Task]:
+        """Every queued task of a running orchestration, in global queue order (what starts next first)."""
+        return [self._task(r) for r in self.conn.execute(
+            "SELECT t.* FROM tasks t JOIN orchestrations o ON o.id=t.orchestration_id "
+            "WHERE t.status='queued' AND o.status='running' ORDER BY COALESCE(t.queue_pos, t.created_at), t.id")]
+
+    def busy_counts(self) -> tuple[int, int]:
+        """(sub-agent tasks running, scheduled runs running): what the global max parallel counts."""
+        t = self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status IN ('running','waiting')").fetchone()[0]
+        r = self.conn.execute("SELECT COUNT(*) FROM runs WHERE status='running' "
+                              "AND COALESCE(note,'')!='orchestration'").fetchone()[0]  # its tasks count instead
+        return int(t), int(r)
 
     def task_for_session(self, sid: int) -> Task | None:
         r = self.conn.execute("SELECT * FROM tasks WHERE session_id=? ORDER BY id DESC LIMIT 1", (sid,)).fetchone()

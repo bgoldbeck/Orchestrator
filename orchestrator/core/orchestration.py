@@ -22,7 +22,8 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from orchestrator.core import model_registry, routing
+from orchestrator.core import concurrency, model_registry, routing
+from orchestrator.core.project_pick import find_projects
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.summaries import find_sessions
 from orchestrator.storage.db import Database, Orchestration, Task, app_dir
@@ -59,7 +60,9 @@ Goal from the user:
 You coordinate sub-agents with the `orchestrator` MCP tools:
 - find_sessions(query) searches earlier chats by summary. Use it first: continuing a chat that already worked on
   the same thing is cheaper than starting fresh.
-- delegate(instructions, engine, model, effort, title, cwd, resume_session_id, reason) starts a sub-agent and returns
+- find_projects(query) lists the user's project folders that match a description. A task may run in another
+  project than this one: pass that project's name as `project` to delegate.
+- delegate(instructions, engine, model, effort, title, cwd, resume_session_id, reason, project) starts a sub-agent and returns
   a task_id at once. Pass resume_session_id (a session_ref like "s:12") to continue an earlier chat; the user sees a
   reuse card and may choose to start fresh instead.
 - wait_for(task_ids) waits for tasks and returns their reports. If it says tasks are still pending, call it again.
@@ -70,7 +73,8 @@ How to work:
 1. Look at the project briefly if you need to, call find_sessions, then split the goal into a few clear tasks that
    can run in parallel.
 2. Delegate them. A sub-agent starts with no context, so give complete instructions (which files, what result).
-   Give each a short title. Up to {max_parallel} run at once; the rest wait in a queue.
+   Give each a short title. Up to {max_parallel} run at once (fewer if the app's global limit is reached); the rest
+   wait in a queue and start on their own.
 3. Call wait_for on the task ids. Read each report. If something failed or is missing, send a follow-up or delegate a fix.
    A task that failed on an automatically picked model is retried once by the app on a stronger setting.
 4. Do not edit files yourself. Sub-agents do the work.
@@ -261,10 +265,11 @@ class OrchestrationManager(QObject):
         self._retry_text: dict[int, str] = {}  # task id -> follow-up text for an escalated retry
         mgr.mcp_provider = self.mcp_for
         mgr.status_changed.connect(self._on_status)
+        concurrency.hub.freed.connect(self.pump_all)
 
     # ---- orchestrations
     def start(self, project_id: int, goal: str, engine: str, model: str, effort: str,
-              max_parallel: int = 4) -> Orchestration:
+              max_parallel: int = 4, project_reason: str | None = None) -> Orchestration:
         goal = goal.strip()
         if not goal:
             raise OrchestrationError("Write a goal first.")
@@ -285,6 +290,8 @@ class OrchestrationManager(QObject):
         orch = self.db.add_orchestration(project_id, goal, engine, model, effort, max(1, int(max_parallel)))
         if pick_reason:
             self.db.update_orchestration(orch.id, pick_reason=pick_reason)
+        if project_reason:
+            self.db.update_orchestration(orch.id, project_reason=project_reason)
         title = "Orchestrate · " + " ".join(goal.split())[:40]
         s = self.db.create_session(project_id, engine, model, effort, title=title)
         self.db.update_orchestration(orch.id, session_id=s.id)
@@ -334,7 +341,9 @@ class OrchestrationManager(QObject):
             raise OrchestrationError(f"Unknown orchestration {oid}.")
         if op == "delegate":
             return self.delegate(oid, **{k: args.get(k, "") for k in (
-                "instructions", "engine", "model", "effort", "title", "cwd", "resume_session_id", "reason")})
+                "instructions", "engine", "model", "effort", "title", "cwd", "resume_session_id", "reason", "project")})
+        if op == "find_projects":
+            return find_projects(self.db, str(args.get("query") or ""))
         if op == "find_sessions":
             return self.find(oid, str(args.get("query") or ""), str(args.get("project") or ""))
         if op == "ask":
@@ -359,13 +368,16 @@ class OrchestrationManager(QObject):
         return t
 
     def delegate(self, oid: int, instructions: str, engine: str = "", model: str = "", effort: str = "",
-                 title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "") -> dict[str, Any]:
+                 title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "",
+                 project: str = "") -> dict[str, Any]:
         orch = self.db.orchestration(oid)
         if not orch or orch.status != "running":
             raise OrchestrationError("This orchestration was stopped; no new tasks can start.")
         if not instructions.strip():
             raise OrchestrationError("instructions is empty.")
         proj = self.db.project(orch.project_id)
+        if project:
+            proj = self.project_ref(project)
         resumed = self.resolve_session(resume_session_id) if resume_session_id else None
         if resume_session_id and not resumed:
             raise OrchestrationError(f"No session {resume_session_id!r} is known. Use a session_ref from find_sessions.")
@@ -402,7 +414,7 @@ class OrchestrationManager(QObject):
         title = " ".join((title or instructions).split())[:60]
         task = self.db.add_task(oid, engine, model, effort, title, instructions.strip(), str(work))
         self.db.update_task(task.id, pick_reason=reason or "Chosen by the planner", auto_picked=int(auto))
-        sid = self.db.create_session(orch.project_id, engine, model, effort, parent_id=orch.session_id,
+        sid = self.db.create_session(proj.id, engine, model, effort, parent_id=orch.session_id,
                                      title=title, cwd=str(work)).id
         self.db.update_task(task.id, session_id=sid)
         self._events[task.id] = asyncio.Event()
@@ -422,6 +434,19 @@ class OrchestrationManager(QObject):
             res["note"] = ("Waiting for the user to confirm on the board (reuse or model pick); it then starts "
                            "on its own. Call wait_for([task_id]) as usual.")
         return res
+
+    def project_ref(self, ref: str):
+        """A project by name (case-insensitive) or folder path; raises a helpful error otherwise."""
+        ref = (ref or "").strip()
+        projects = self.db.projects()
+        p = next((p for p in projects if p.name.lower() == ref.lower()), None)
+        if not p:
+            norm = lambda x: str(Path(x).resolve()).lower()  # noqa: E731
+            p = next((p for p in projects if Path(ref).is_absolute() and norm(p.path) == norm(ref)), None)
+        if not p:
+            names = ", ".join(p.name for p in projects[:12]) or "(none)"
+            raise OrchestrationError(f"No project {ref!r}. Use find_projects, or one of: {names}.")
+        return p
 
     # ---- reuse / pick proposals
     def resolve_session(self, ref: str):
@@ -533,19 +558,55 @@ class OrchestrationManager(QObject):
         self.changed.emit(q.orchestration_id)
 
     def pump(self, oid: int) -> None:
-        """Start queued tasks while under the orchestration's max parallel."""
-        orch = self.db.orchestration(oid)
-        if not orch:
-            return
-        tasks = self.db.tasks(oid)
-        running = sum(1 for t in tasks if t.status in ("running", "waiting"))
-        for t in tasks:
-            if running >= orch.max_parallel:
-                break
-            if t.status == "queued":
-                if self._start_task(t):
-                    running += 1
+        """Start queued tasks (this orchestration's and any other waiting ones) as limits allow."""
+        self.pump_all()
         self.changed.emit(oid)
+
+    def pump_all(self) -> None:
+        """Start queued tasks in global queue order while both the task's orchestration limit
+        ("Run up to N tasks at once") and the app-wide limit (Settings) have room."""
+        free = concurrency.free_slots(self.db)
+        running: dict[int, int] = {}
+        touched: set[int] = set()
+        for t in self.db.queued_tasks():
+            if free <= 0:
+                break
+            orch = self.db.orchestration(t.orchestration_id)
+            if not orch:
+                continue
+            if t.orchestration_id not in running:
+                running[t.orchestration_id] = sum(1 for x in self.db.tasks(orch.id) if x.status in ("running", "waiting"))
+            if running[t.orchestration_id] >= orch.max_parallel:
+                continue
+            if self._start_task(t):
+                running[t.orchestration_id] += 1
+                free -= 1
+                touched.add(orch.id)
+        for oid in touched:
+            self.changed.emit(oid)
+
+    def queue_positions(self) -> dict[int, int]:
+        """Task id -> 1-based place in the global queue (what starts next is #1)."""
+        return {t.id: i for i, t in enumerate(self.db.queued_tasks(), 1)}
+
+    def move_task(self, tid: int, delta: int) -> None:
+        """Move a queued task earlier (delta < 0) or later in the global queue."""
+        q = self.db.queued_tasks()
+        idx = next((i for i, t in enumerate(q) if t.id == tid), None)
+        if idx is None:
+            return
+        j = max(0, min(len(q) - 1, idx + (1 if delta > 0 else -1)))
+        if j == idx:
+            return
+        a, b = q[idx], q[j]
+        pa = a.queue_pos if a.queue_pos is not None else a.created_at
+        pb = b.queue_pos if b.queue_pos is not None else b.created_at
+        if pa == pb:
+            pb += 0.001 if j > idx else -0.001
+        self.db.update_task(a.id, queue_pos=pb)
+        self.db.update_task(b.id, queue_pos=pa)
+        for oid in {a.orchestration_id, b.orchestration_id}:
+            self.changed.emit(oid)
 
     def _start_task(self, t: Task) -> bool:
         sid = t.session_id
@@ -668,7 +729,7 @@ class OrchestrationManager(QObject):
         ev = self._events.setdefault(tid, asyncio.Event())
         ev.set()
         self.task_changed.emit(t.orchestration_id, tid)
-        self.pump(t.orchestration_id)
+        concurrency.slot_freed()  # queued tasks here or elsewhere, and waiting scheduled runs, may start now
         orch = self.db.orchestration(t.orchestration_id)
         planner = self.db.session(orch.session_id) if orch and orch.session_id else None
         if (orch and orch.status == "running" and planner and planner.status not in ("running", "waiting")

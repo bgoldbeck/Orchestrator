@@ -362,6 +362,28 @@ class SettingsPage(SmoothScrollArea):
         fol.addLayout(self._keyed_row(fo, "Reuse and model picks", "When the planner wants to continue an earlier "
                                       "chat (or, with Always ask, for every automatic model pick).",
                                       "orchestrate.confirm", CONFIRM_MODES, "countdown"))
+        grow0 = QHBoxLayout()
+        gcol = QVBoxLayout()
+        gcol.setSpacing(0)
+        gcol.addWidget(BodyLabel("Agents running at once (whole app)", fo))
+        gsub = CaptionLabel("Orchestration tasks and scheduled runs share this limit; the rest wait in a queue. "
+                            "Each orchestration also has its own “Run up to N tasks at once”.", fo)
+        gsub.setWordWrap(True)
+        gsub.setStyleSheet(f"color:{palette()['muted']};")
+        gcol.addWidget(gsub)
+        from orchestrator.ui.number_box import NumberBox
+
+        from orchestrator.core import concurrency
+
+        self.globalMax = NumberBox(fo)
+        self.globalMax.setObjectName("globalMaxParallel")
+        self.globalMax.setRange(1, 32)
+        self.globalMax.setValue(concurrency.global_limit(db))
+        self.globalMax.valueChanged.connect(lambda v: (db.set_setting("global.max_parallel", int(v)),
+                                                       concurrency.slot_freed()))
+        grow0.addLayout(gcol, 1)
+        grow0.addWidget(self.globalMax)
+        fol.addLayout(grow0)
         fol.addLayout(self._switch_row(fo, "Retry failed automatic picks once",
                                        "More effort first, then the next stronger enabled model.",
                                        "orchestrate.escalate", True))

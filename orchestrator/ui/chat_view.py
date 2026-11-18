@@ -164,6 +164,7 @@ class ModelPill(TransparentDropDownPushButton):
         label = model_registry.label(self.db, engine, model)
         ok = model_registry.is_allowed(self.db, engine, model)
         self.setText(f"{ENGINES.get(engine, engine)} · {label}{'' if ok else ' (disabled)'} · {effort or 'default'}")
+        self.setMinimumWidth(self.sizeHint().width())  # never cut the label
 
     def _open(self) -> None:
         menu = self.build_menu()
