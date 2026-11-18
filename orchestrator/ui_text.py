@@ -49,3 +49,21 @@ def age(ts: float | None, now: float | None = None) -> str:
     if s < 86400 * 60:
         return f"{s // (86400 * 7)}w"
     return f"{s // (86400 * 30)}mo"
+
+
+def tokens_k(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def usage_text(u: dict, short: bool = False) -> str:
+    """'45.2k in · 3.1k out · $0.12' (cost only when the engine reports it)."""
+    if not u or not u.get("turns"):
+        return ""
+    parts = [f"{tokens_k(u['input'] + u['cached'])} in", f"{tokens_k(u['output'])} out"]
+    if u.get("cost"):
+        parts.append(f"${u['cost']:.2f}")
+    if not short:
+        parts.append(f"{u['turns']} turn{'s' if u['turns'] != 1 else ''}")
+    return "  ·  ".join(parts)

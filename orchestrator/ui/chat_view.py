@@ -44,6 +44,7 @@ from orchestrator.ui.chat_widgets import (
     fade_in,
 )
 from orchestrator.ui.theme import UI_FONT, palette
+from orchestrator.ui_text import usage_text
 
 CONTENT_MAX = 860
 
@@ -282,6 +283,15 @@ class ChatView(QWidget):
         tl.addWidget(self.title)
         tl.addWidget(self.path)
         hl.addLayout(tl, 1)
+        self.usage = CaptionLabel("", self.header)
+        self.usage.setObjectName("usageMeter")
+        self.usage.setStyleSheet(f"color:{palette()['muted']}; padding-right:8px;")
+        hl.addWidget(self.usage)
+        self.diffBtn = ToolButton(FIF.DOCUMENT, self.header)
+        self.diffBtn.setToolTip("Changes (git diff of this chat's folder)  ·  Ctrl+D")
+        self.diffBtn.installEventFilter(ToolTipFilter(self.diffBtn))
+        self.diffBtn.clicked.connect(self.show_diff)
+        hl.addWidget(self.diffBtn)
         self.pill = ModelPill(db, self.header)
         self.pill.changed.connect(self._on_model_changed)
         hl.addWidget(self.pill)
@@ -378,6 +388,7 @@ class ChatView(QWidget):
         self.path.setText(where + ("   ·   imported from engine history" if s.source == "imported" else ""))
         self.pill.set_value(s.engine, s.model or "", s.effort or "", locked=bool(s.engine_session_id))
         self._update_model_warning()
+        self.update_usage()
         msgs = self._history(s)
         if not msgs and not self.mgr.is_running(s.id):
             self.scroll.hide()
@@ -472,6 +483,27 @@ class ChatView(QWidget):
         return NoticeCard(text, "error")
 
     # ---- actions
+    def update_usage(self) -> None:
+        s = self.session
+        u = self.db.usage(s.id) if s else {}
+        self.usage.setText(usage_text(u, short=True))
+        self.usage.setToolTip("Tokens used by this chat in Orchestrator (input includes cached).\n" + usage_text(u)
+                              if u.get("turns") else "")
+
+    def chat_folder(self) -> str:
+        s = self.session
+        if not s:
+            return ""
+        proj = self.db.project(s.project_id)
+        return s.cwd or (proj.path if proj else "")
+
+    def show_diff(self) -> None:
+        if not self.session:
+            return
+        from orchestrator.ui.diff_view import DiffDialog
+
+        DiffDialog(self.chat_folder(), self.window()).exec()
+
     def _update_model_warning(self) -> None:
         s = self.session
         bad = bool(s) and not model_registry.is_allowed(self.db, s.engine, s.model or "")
@@ -594,6 +626,7 @@ class ChatView(QWidget):
             self._flush_render()
             self._hide_dots()
             u = self._usage
+            self.update_usage()
             if u:
                 self._add(UsageLine(u.input_tokens, u.output_tokens, u.cached_tokens, u.cost_usd))
                 self._usage = None

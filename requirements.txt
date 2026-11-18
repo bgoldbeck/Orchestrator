@@ -8,3 +8,4 @@ pygments>=2.18
 pytest>=8
 apscheduler>=3.10,<4
 sqlalchemy>=2
+mcp>=2.3
