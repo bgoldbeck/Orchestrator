@@ -208,6 +208,28 @@ window and to fully ready (every page built and sessions refreshed from disk). O
 | `Orchestrator.exe`, warm | 1.75 → 0.73 s | 2.01 → 1.35 s |
 | `Orchestrator.exe`, first run after build | 2.38 → 1.98 s | 2.69 → 2.60 s |
 
+## Usage limits
+
+The title bar shows one pill per provider (Codex, Claude). Each pill has two thin bars: the 5-hour window on top
+and the weekly window below. The number is the tighter of the two. Colors: green under 70%, amber from 70%, red from
+90%. Hover a pill to see the percentages and when each window resets. Click it to open **Usage**, which shows
+details, the source and a small history per window. Usage refreshes every 2 minutes and after each turn.
+
+What is exact and what is an estimate:
+
+- **Codex: exact.** Codex writes its rate limits (5-hour and weekly `used_percent`, `resets_at`) into its session
+  logs after every turn. The app reads the newest one.
+- **Claude: exact when the Claude Code CLI reports it.** During a turn the CLI sends a rate-limit event (status,
+  utilization, reset time, window). It sends one only when something changes, often only for the window that is
+  close to its limit. Windows without a report show an **estimate**: tokens used in that window, from the local
+  Claude Code logs. That estimate has no percentage, because the logs do not include the plan size.
+
+More providers (for example the Anthropic API) can be added by subclassing `UsageProvider` in
+`orchestrator/core/usage.py` and calling `register()`.
+
+![Usage page](docs/screenshots/usage-page.png)
+![Usage pills](docs/screenshots/usage-bar.png)
+
 ## Run
 
 ```

@@ -63,4 +63,15 @@ class Error:
     kind: str = "error"  # error | auth | warning
 
 
-Event = Union[Started, Text, ToolCall, ToolResult, NeedsApproval, Usage, Done, Error]
+@dataclass
+class RateLimit:
+    """Plan limit report from the engine (Claude Code CLI's rate_limit_event)."""
+
+    engine: str
+    window: str  # five_hour | seven_day | seven_day_opus | seven_day_sonnet | overage
+    status: str = ""  # allowed | allowed_warning | rejected
+    utilization: float | None = None  # 0-1
+    resets_at: float | None = None
+
+
+Event = Union[Started, Text, ToolCall, ToolResult, NeedsApproval, Usage, Done, Error, RateLimit]

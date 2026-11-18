@@ -111,11 +111,14 @@ class MainWindow(FluentWindow):
         self.schedules = (LazyPage("schedulesPage", self._make_schedules, self._schedules_built, self)
                           if runner is not None else None)
         self.settings = LazyPage("settingsPage", self._make_settings, self._settings_built, self)
+        self.usageBar = None
+        self.usage = LazyPage("usagePage", self._make_usage, None, self)
         self.addSubInterface(self.projects, FIF.HOME, "Projects")
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
         self.addSubInterface(self.orchestrate, FIF.ROBOT, "Orchestrate")
         if self.schedules is not None:
             self.addSubInterface(self.schedules, FIF.DATE_TIME, "Schedules")
+        self.addSubInterface(self.usage, FIF.SPEED_HIGH, "Usage", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings, FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setExpandWidth(200)
         self.navigationInterface.setCollapsible(True)
@@ -137,7 +140,7 @@ class MainWindow(FluentWindow):
             return
         self._startup_started = True
         steps = [self._step_chats, self._step_orchestrate, self._step_settings, self._step_schedules,
-                 self._step_extras]
+                 self._step_usage, self._step_extras]
         if sync:
             for step in steps:
                 step(True)
@@ -179,6 +182,30 @@ class MainWindow(FluentWindow):
         if self.runner.scheduler is None:
             self.runner.start()
         self.schedules.ensure()
+
+    def _step_usage(self, sync: bool) -> None:
+        self.ensure_usage_bar().start()
+
+    def ensure_usage_bar(self):
+        """Title-bar pills (one per provider, 5-hour + weekly bars); click opens the Usage page."""
+        if self.usageBar is None:
+            from orchestrator.core.events import RateLimit
+            from orchestrator.ui.usage_view import UsageBar
+
+            bar = UsageBar(self.db, self.titleBar)
+            lay = self.titleBar.hBoxLayout
+            lay.insertWidget(lay.count() - 1, bar, 0, Qt.AlignVCenter)  # just left of min/max/close
+            bar.openUsage.connect(lambda _p: self.switchTo(self.usage))
+            self.mgr.status_changed.connect(
+                lambda _sid, st: st in ("done", "error", "idle") and bar.refresh_soon())
+            self.mgr.event.connect(lambda _sid, ev: isinstance(ev, RateLimit) and bar.refresh_soon(300))
+            self.usageBar = bar
+        return self.usageBar
+
+    def _make_usage(self, parent):
+        from orchestrator.ui.usage_view import UsagePage
+
+        return UsagePage(self.db, self.ensure_usage_bar(), parent)
 
     def _step_extras(self, sync: bool) -> None:
         self._install_shortcuts()

@@ -23,6 +23,7 @@ from orchestrator.core.events import (
     ToolCall,
     ToolResult,
     Usage,
+    RateLimit,
 )
 from orchestrator.engines._threadbridge import ThreadBridge
 from orchestrator.engines.base import AgentAdapter, TurnRequest
@@ -123,6 +124,12 @@ def map_claude_message(msg: Any, st: ClaudeMapState) -> list[Event]:
                 if isinstance(b, ToolResultBlock):
                     out.append(ToolResult(id=b.tool_use_id, output=_result_text(b.content),
                                           is_error=bool(b.is_error), name=st.tool_names.get(b.tool_use_id, "")))
+    elif type(msg).__name__ == "RateLimitEvent":  # by name: older SDKs do not have the class
+        info = getattr(msg, "rate_limit_info", None)
+        if info is not None:
+            out.append(RateLimit(engine="claude", window=str(info.rate_limit_type or "five_hour"),
+                                 status=str(info.status or ""), utilization=info.utilization,
+                                 resets_at=float(info.resets_at) if info.resets_at else None))
     elif isinstance(msg, ResultMessage):
         ensure_started(msg.session_id)
         u = msg.usage or {}
