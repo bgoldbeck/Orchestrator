@@ -9,6 +9,31 @@ def short_title(text: str, n: int = 48) -> str:
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
 
 
+def relative(ts: float | None, now: float | None = None) -> str:
+    """'just now', '1 minute ago', '3 hours ago', '2 days ago', then a date ('Nov 10', 'Nov 10, 2025')."""
+    import datetime as _dt
+
+    if not ts:
+        return ""
+    now = now or time.time()
+    s = max(0, int(now - ts))
+
+    def unit(n: int, word: str) -> str:
+        return f"{n} {word}{'' if n == 1 else 's'} ago"
+
+    if s < 60:
+        return "just now"
+    if s < 3600:
+        return unit(s // 60, "minute")
+    if s < 86400:
+        return unit(s // 3600, "hour")
+    if s < 86400 * 7:
+        return unit(s // 86400, "day")
+    d = _dt.datetime.fromtimestamp(ts)
+    label = f"{d:%b} {d.day}"
+    return label if d.year == _dt.datetime.fromtimestamp(now).year else f"{label}, {d.year}"
+
+
 def age(ts: float | None, now: float | None = None) -> str:
     if not ts:
         return ""

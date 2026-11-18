@@ -41,10 +41,16 @@ class MainWindow(FluentWindow):
         if icon:
             self.setWindowIcon(icon)
         self.resize(1320, 860)
-        self.setMinimumSize(QSize(980, 640))
+        self.setMinimumSize(QSize(800, 600))
+        from orchestrator.ui.projects_page import ProjectsPage
+
+        self.projects = ProjectsPage(db, self)
         self.chats = ChatsPage(db, mgr, self)
         self.settings = SettingsPage(db, self)
+        self.addSubInterface(self.projects, FIF.HOME, "Projects")
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
+        self.projects.openProject.connect(self.open_project)
+        self.projects.projectsChanged.connect(self.chats.sidebar.reload)
         self.runner = runner
         self.schedules = None
         if runner is not None:
@@ -63,6 +69,7 @@ class MainWindow(FluentWindow):
         self.indexer = indexer
         if indexer is not None:
             indexer.changed.connect(self.chats.sidebar.reload)
+            indexer.changed.connect(self._refresh_projects_if_visible)
             indexer.start()
 
         self.tray = None
@@ -76,7 +83,22 @@ class MainWindow(FluentWindow):
             QApplication.instance().setQuitOnLastWindowClosed(False)
             runner.run_started.connect(lambda *_: self.chats.sidebar.reload())
 
+    def _refresh_projects_if_visible(self) -> None:
+        if self.stackedWidget.currentWidget() is self.projects:
+            self.projects.reload()
+
+    def open_project(self, pid: int) -> None:
+        """Projects home → that project's chats (latest chat, or a fresh one)."""
+        self.switchTo(self.chats)
+        sessions = self.db.sessions(pid)
+        if sessions:
+            self.chats.sidebar.select(sessions[0].id)
+        else:
+            self.chats.sidebar.new_chat(pid)
+
     def _on_page(self, _i: int) -> None:
+        if self.stackedWidget.currentWidget() is self.projects:
+            self.projects.reload()
         if self.stackedWidget.currentWidget() is self.settings:
             self.settings.refresh()
         elif self.schedules is not None and self.stackedWidget.currentWidget() is self.schedules:
