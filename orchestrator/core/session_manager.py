@@ -53,7 +53,8 @@ class SessionManager(QObject):
         # Per-session run options set by the orchestrator: {"claude_mode", "sandbox"}.
         self.run_options: dict[int, dict] = {}
         # sid -> MCP servers for that session's turns (set by OrchestrationManager), or None.
-        self.mcp_provider = None
+        self.mcp_provider = None  # orchestration tools (set by OrchestrationManager)
+        self.mcp_providers: list = []  # more servers for every chat (e.g. app control)
 
     def any_running(self) -> bool:
         return any(not t.done() for t in self._tasks.values())
@@ -119,6 +120,18 @@ class SessionManager(QObject):
         if a:
             await a.interrupt()
 
+    def mcp_for(self, sid: int) -> dict | None:
+        """Every MCP server this chat gets: orchestration tools (planner chats) plus app control (all chats)."""
+        out: dict = {}
+        for prov in ([self.mcp_provider] if self.mcp_provider else []) + list(self.mcp_providers):
+            try:
+                got = prov(sid)
+            except Exception:  # noqa: BLE001 - a broken provider must not stop the turn
+                got = None
+            if got:
+                out.update(got)
+        return out or None
+
     async def _run(self, sid: int, prompt: str, policy: str | None = None) -> None:
         s = self.db.session(sid)
         proj = self.db.project(s.project_id) if s else None
@@ -133,7 +146,7 @@ class SessionManager(QObject):
         req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
                           resume_id=s.engine_session_id,
                           sandbox=self.run_options.get(sid, {}).get("sandbox", sandbox),
-                          mcp=self.mcp_provider(sid) if self.mcp_provider else None)
+                          mcp=self.mcp_for(sid))
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"

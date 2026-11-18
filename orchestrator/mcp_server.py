@@ -156,8 +156,90 @@ def build_server():
     return server
 
 
+def build_app_server():
+    """App-control tools, attached to every chat (ORCH_SERVER=app). ORCH_ORCHESTRATION_ID carries the chat id."""
+    from mcp.server.mcpserver import MCPServer
+
+    server = MCPServer(
+        "app",
+        instructions="Change the Orchestrator app's own settings when the user asks: model preferences, appearance "
+                     "(font size, theme, density, accent), schedules (run once / repeat), and a few safe settings. "
+                     "Each change is shown to the user with an Undo button. Only act on what the user asked.",
+    )
+
+    @server.tool()
+    async def set_model_preference(task_type: str, model: str, effort: str = "", keywords: list[str] | None = None,
+                                   priority: int | None = None, notes: str = "") -> str:
+        """Add or update a model preference rule (Settings › Orchestrator), e.g. the user says "prefer design and
+        planning to be opus 5.5 medium" -> task_type "Design and planning", model "opus 5.5", effort "medium".
+
+        model: a name as the user said it ("opus 5.5", "gpt 6.2 sol") or an id; if it is ambiguous or disabled the
+        tool says so, then ask the user. keywords: words that identify such tasks (defaults from task_type).
+        """
+        return _dump(await bridge_call("set_model_preference", {
+            "task_type": task_type, "model": model, "effort": effort, "keywords": keywords or [],
+            "priority": priority, "notes": notes}, timeout=30))
+
+    @server.tool()
+    async def list_preferences() -> str:
+        """The model preference rules, in priority order (which are active depends on enabled models)."""
+        return _dump(await bridge_call("list_preferences", {}, timeout=30))
+
+    @server.tool()
+    async def set_appearance(font_size: str = "", chat_font_size: str = "", theme: str = "", density: str = "",
+                             accent: str = "", font: str = "", code_font: str = "", code_font_size: str = "") -> str:
+        """Change how the app looks. Sizes take points ("11"), relative changes ("bigger", "smaller", "+1") or
+        "default". font_size = menus/buttons, chat_font_size = messages. "Increase the font size" -> both bigger.
+        theme: dark | light | system. density: compact | comfortable. accent: Sky, Violet, Emerald, Amber, Rose or
+        #rrggbb. Leave the rest empty."""
+        return _dump(await bridge_call("set_appearance", {k: v for k, v in {
+            "font_size": font_size, "chat_font_size": chat_font_size, "theme": theme, "density": density,
+            "accent": accent, "font": font, "code_font": code_font, "code_font_size": code_font_size}.items() if v},
+            timeout=30))
+
+    @server.tool()
+    async def create_schedule(prompt: str, when: str = "", repeat: str = "", project: str = "", model: str = "",
+                              effort: str = "", target: str = "chat", name: str = "",
+                              permission: str = "read-only") -> str:
+        """Schedule work: run once later (when: "in 5 hours", "tomorrow 8am", "friday 9:30am", "tonight") or
+        repeat (repeat: "every day at 8am", "weekdays 9:30", "every monday 7pm", or cron). Empty when/repeat = in 5
+        hours. target: chat (one agent) or orchestration (a planner with sub-agents). project: a project name (empty
+        = this chat's project). model: as the user said it (empty = this chat's model). permission: read-only or
+        allow-edits."""
+        return _dump(await bridge_call("create_schedule", {
+            "prompt": prompt, "when": when, "repeat": repeat, "project": project, "model": model, "effort": effort,
+            "target": target, "name": name, "permission": permission}, timeout=30))
+
+    @server.tool()
+    async def list_schedules() -> str:
+        """All schedules with their id, timing, next run and model."""
+        return _dump(await bridge_call("list_schedules", {}, timeout=30))
+
+    @server.tool()
+    async def cancel_schedule(schedule_id: int = 0, name: str = "") -> str:
+        """Delete a schedule (by id, or a unique part of its name). The user is asked to Allow or Deny first;
+        this waits for that answer."""
+        return _dump(await bridge_call("cancel_schedule", {"schedule_id": schedule_id, "name": name, "timeout": 300},
+                                       timeout=330))
+
+    @server.tool()
+    async def list_settings() -> str:
+        """Settings this tool may change, with current values, plus which models are enabled."""
+        return _dump(await bridge_call("list_settings", {}, timeout=30))
+
+    @server.tool()
+    async def set_setting(name: str, value: str, model: str = "") -> str:
+        """Change one safe setting: global_max_parallel (1-32), summaries_mode (model|heuristic|off),
+        reuse_confirm (countdown|always_ask|never), escalate, notifications, close_to_tray (true/false), or
+        model_enabled (value true/false + model name). Disabling a model asks the user to Allow first."""
+        return _dump(await bridge_call("set_setting", {"name": name, "value": value, "model": model, "timeout": 300},
+                                       timeout=330))
+
+    return server
+
+
 def main() -> None:
-    build_server().run("stdio")
+    (build_app_server() if os.environ.get("ORCH_SERVER") == "app" else build_server()).run("stdio")
 
 
 if __name__ == "__main__":

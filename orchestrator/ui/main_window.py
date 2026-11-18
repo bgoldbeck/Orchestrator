@@ -112,6 +112,7 @@ class MainWindow(FluentWindow):
                           if runner is not None else None)
         self.settings = LazyPage("settingsPage", self._make_settings, self._settings_built, self)
         self.usageBar = None
+        self.app_control = None
         self.usage = LazyPage("usagePage", self._make_usage, None, self)
         self.addSubInterface(self.projects, FIF.HOME, "Projects")
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
@@ -161,6 +162,7 @@ class MainWindow(FluentWindow):
         startup.part_done("deferred")
 
     def _step_chats(self, sync: bool) -> None:
+        self.ensure_app_control()
         self.chats.ensure()
         if self.indexer is not None:
             self.indexer.start()  # scans engine history on a worker thread
@@ -222,6 +224,60 @@ class MainWindow(FluentWindow):
             self._ensure_om().question_asked.connect(self._question_toast)
             self.mgr.approval_requested.connect(self._subagent_approval_toast)
 
+    def ensure_app_control(self):
+        """Settings changed from any chat (MCP "app" tools on every chat + simple local commands)."""
+        if self.app_control is None:
+            from orchestrator.core.app_control import AppControl
+
+            ctl = AppControl(self.db, self.runner, self)
+            self.mgr.mcp_providers.append(ctl.mcp_for)
+            ctl.changed.connect(self._app_changed)
+            ctl.confirm_requested.connect(self._app_confirm)
+            self.app_control = ctl
+            if self.chats.built:
+                self.chats.chat.set_app_control(ctl)
+        return self.app_control
+
+    def _app_changed(self, area: str) -> None:
+        """Refresh what shows the setting a chat just changed."""
+        if area == "preferences" and self.settings.built:
+            self.settings.rules.load()
+        elif area == "models":
+            if self.settings.built:
+                self.settings.models.load()
+                self.settings.rules.load()
+            self._models_changed()
+        elif area == "schedules" and self.schedules is not None and self.schedules.built:
+            self.schedules.reload()
+        elif area == "settings" and self.settings.built:
+            from orchestrator.core import concurrency
+
+            self.settings.globalMax.blockSignals(True)
+            self.settings.globalMax.setValue(concurrency.global_limit(self.db))
+            self.settings.globalMax.blockSignals(False)
+        elif area == "appearance" and self.settings.built:
+            from orchestrator.ui import appearance
+
+            card = self.settings.appearance
+            card.look = appearance.load(self.db)
+            card._paint_swatches()
+
+    def _app_confirm(self, sid, text: str, fut) -> None:
+        """Allow / Deny for a destructive change: in the chat that asked, else a dialog."""
+        chat = self.chats.chat if self.chats.built else None
+        if chat is not None and chat.session and chat.session.id == sid and chat.isVisible():
+            chat.show_confirm(text, fut)
+            return
+        from qfluentwidgets import MessageBox
+
+        box = MessageBox("A chat wants to change a setting", text, self)
+        box.yesButton.setText("Allow")
+        box.cancelButton.setText("Deny")
+        box.yesSignal.connect(lambda: fut.done() or fut.set_result(True))
+        box.cancelSignal.connect(lambda: fut.done() or fut.set_result(False))
+        fut.add_done_callback(lambda _f: box.isVisible() and box.close())
+        box.open()
+
     def _ensure_om(self):
         if self.om is None:
             from orchestrator.core.orchestration import OrchestrationManager
@@ -238,6 +294,8 @@ class MainWindow(FluentWindow):
 
     # page factories / wiring (each runs when its page is first built)
     def _chats_built(self, page) -> None:
+        if self.app_control is not None:
+            page.chat.set_app_control(self.app_control)
         page.sidebar.set_loading(self.projects.loading)
         page.chat.openSettingsRequested.connect(lambda: self.switchTo(self.settings))
         if self.schedules is not None:

@@ -473,3 +473,91 @@ class UsageLine(QLabel):
         self.setAlignment(Qt.AlignLeft)
         self.setContentsMargins(22, 0, 0, 0)
         self.setStyleSheet(f"color:{palette()['faint']}; font-size:8.5pt; background:transparent;")
+
+
+class AppliedCard(QFrame):
+    """'Applied: …' for an app setting changed from chat, with Undo."""
+
+    def __init__(self, summary: str, change_id: str | None, undo=None, undone: bool = False,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        p = palette()
+        self.change_id = change_id
+        self.setObjectName("appliedCard")
+        self.setStyleSheet(f"#appliedCard {{ background:{p['card']}; border:1px solid {p['border']};"
+                           " border-radius:10px; }")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, space(6), 8, space(6))
+        lay.setSpacing(8)
+        icon = QLabel("✓", self)
+        icon.setStyleSheet(f"color:{p['accent']}; font-weight:700; background:transparent;")
+        lay.addWidget(icon)
+        self.label = QLabel(self)
+        self.label.setWordWrap(True)
+        self.label.setTextFormat(Qt.PlainText)
+        self.label.setStyleSheet(f"color:{p['text']}; background:transparent;")
+        lay.addWidget(self.label, 1)
+        from qfluentwidgets import TransparentPushButton
+
+        self.undoBtn = TransparentPushButton("Undo", self)
+        self.undoBtn.setObjectName("undoChange")
+        self.undoBtn.setMinimumWidth(self.undoBtn.sizeHint().width())
+        lay.addWidget(self.undoBtn)
+        self.summary = summary
+        self._undo = undo
+        self.undoBtn.clicked.connect(self._click)
+        self.set_undone(undone)
+        if not (undo and change_id):
+            self.undoBtn.hide()
+
+    def _click(self) -> None:
+        if self._undo:
+            self._undo(self.change_id)
+
+    def set_undone(self, undone: bool) -> None:
+        self.label.setText(("Undone: " if undone else "Applied: ") + self.summary)
+        self.undoBtn.setVisible(not undone and bool(self._undo and self.change_id))
+
+
+class ConfirmCard(QFrame):
+    """Allow / Deny for a destructive app change asked from chat (disable a model, delete a schedule)."""
+
+    def __init__(self, text: str, fut, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        p = palette()
+        self.fut = fut
+        self.setObjectName("confirmCard")
+        self.setStyleSheet(f"#confirmCard {{ background:{p['warn_bg']}; border:1px solid rgba(245,181,68,0.45);"
+                           " border-radius:10px; }")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 8, 8, 8)
+        self.label = QLabel(text, self)
+        self.label.setWordWrap(True)
+        self.label.setStyleSheet(f"color:{p['text']}; background:transparent;")
+        lay.addWidget(self.label, 1)
+        from qfluentwidgets import PrimaryPushButton, PushButton
+
+        self.denyBtn = PushButton("Deny", self)
+        self.allowBtn = PrimaryPushButton("Allow", self)
+        for b in (self.denyBtn, self.allowBtn):
+            b.setMinimumWidth(b.sizeHint().width())
+            lay.addWidget(b)
+        self.allowBtn.clicked.connect(lambda: self._answer(True))
+        self.denyBtn.clicked.connect(lambda: self._answer(False))
+        fut.add_done_callback(lambda f: self._done(f))
+
+    def _answer(self, ok: bool) -> None:
+        if not self.fut.done():
+            self.fut.set_result(ok)
+
+    def _done(self, f) -> None:
+        try:
+            ok = bool(f.result())
+        except Exception:  # noqa: BLE001 - cancelled / timed out
+            ok = False
+        try:
+            self.allowBtn.hide()
+            self.denyBtn.hide()
+            self.label.setText(self.label.text() + ("  — allowed" if ok else "  — denied"))
+        except RuntimeError:  # card already deleted
+            pass
