@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
@@ -22,6 +22,21 @@ def _app_icon() -> QIcon:
         p.drawEllipse(x - 7, y - 7, 14, 14)
     p.end()
     return QIcon(pm)
+
+
+class _FirstPaint(QObject):
+    def eventFilter(self, obj, e) -> bool:  # noqa: N802
+        if e.type() == QEvent.Paint:
+            from orchestrator import startup
+
+            obj.removeEventFilter(self)
+            QTimer.singleShot(0, lambda: startup.part_done("first_paint"))  # after this paint is on screen
+        return False
+
+
+def _watch_first_paint(win) -> None:
+    win._first_paint = _FirstPaint(win)
+    win.installEventFilter(win._first_paint)
 
 
 def main() -> int:
@@ -43,7 +58,9 @@ def main() -> int:
     from orchestrator.storage.db import Database
     from orchestrator.ui.main_window import MainWindow
     from orchestrator.ui.theme import ACCENTS, UI_FONT, UI_FONTS
+    from orchestrator import startup
 
+    startup.mark("imports")
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName("Orchestrator")
@@ -62,8 +79,15 @@ def main() -> int:
     closing = asyncio.Event()
     app.aboutToQuit.connect(closing.set)
 
+    startup.mark("qapp")
     mgr = SessionManager(db)
-    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db), runner=ScheduleRunner(db, mgr))
+    indexer = SessionIndexer(db)
+    indexer.scanned.connect(lambda: startup.part_done("sessions"))
+    win = MainWindow(db, mgr, _app_icon(), indexer=indexer, runner=ScheduleRunner(db, mgr))
+    startup.mark("window_created")
+    _watch_first_paint(win)
+    if startup.bench_quit():
+        startup.on_ready = lambda: QTimer.singleShot(300, win.quit_app)
     if "--tray" in sys.argv and win.tray is not None:
         pass  # started at login: stay in the tray
     else:

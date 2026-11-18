@@ -49,6 +49,7 @@ def scan_changed(known: dict[str, float], claude_root: Path | None = None,
 
 
 class SessionIndexer(QObject):
+    scanned = Signal()  # after every scan, changed or not
     changed = Signal()
 
     def __init__(self, db: Database, parent: QObject | None = None) -> None:
@@ -81,6 +82,7 @@ class SessionIndexer(QObject):
             print("indexer error:", exc)
         finally:
             self._busy = False
+            self.scanned.emit()
 
     def project_for(self, cwd: str) -> int | None:
         if not cwd:
