@@ -11,7 +11,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QFont, QGuiApplication, QPainter, QColor
+from PySide6.QtGui import QGuiApplication, QPainter, QColor
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -36,7 +36,7 @@ from qfluentwidgets import (
 )
 
 from orchestrator.ui.markdown_render import code_html, split_segments, text_html
-from orchestrator.ui.theme import MONO_FONT, UI_FONT, engine_badge, palette
+from orchestrator.ui.theme import chat_font, code_pt, engine_badge, mono_css, palette, space
 
 
 def fade_in(w: QWidget, ms: int = 220) -> None:
@@ -60,8 +60,7 @@ class RichLabel(QLabel):
         self.setOpenExternalLinks(True)
         self.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        f = QFont(UI_FONT)
-        f.setPointSizeF(10.5)
+        f = chat_font()
         self.setFont(f)
         self.setStyleSheet(f"color:{palette()['text']}; background:transparent;")
         self.setText(html)
@@ -233,20 +232,19 @@ class UserMessage(QWidget):
         super().__init__(parent)
         p = palette()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(96, 2, 0, 2)
+        lay.setContentsMargins(48 if parent is not None and parent.objectName() == "appearancePreview" else 96, 2, 0, 2)
         lay.addStretch(1)
         bubble = QFrame(self)
         bubble.setObjectName("userBubble")
         bubble.setStyleSheet(f"#userBubble {{ background:{p['user_bubble']}; border-radius:12px; }}")
         bl = QVBoxLayout(bubble)
-        bl.setContentsMargins(12, 7, 12, 7)
+        bl.setContentsMargins(12, space(7), 12, space(7))
         lbl = QLabel(bubble)
         lbl.setTextFormat(Qt.PlainText)
         lbl.setText(text)
         lbl.setWordWrap(True)
         lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        f = QFont(UI_FONT)
-        f.setPointSizeF(10.5)
+        f = chat_font()
         lbl.setFont(f)
         lbl.setStyleSheet(f"color:{p['text']}; background:transparent;")
         # short messages stay on one line instead of wrapping into a narrow column
@@ -297,7 +295,7 @@ class ToolCard(QFrame):
         t = CaptionLabel(title, self.head)
         t.setStyleSheet(f"color:{p['muted']};")
         self.summary = QLabel(summary, self.head)
-        self.summary.setStyleSheet(f"color:{p['faint']}; font-family:{MONO_FONT}; font-size:8.5pt; background:transparent;")
+        self.summary.setStyleSheet(f"color:{p['faint']}; font-family:{mono_css()}; font-size:{code_pt(-1)}; background:transparent;")
         self.summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.ring = IndeterminateProgressRing(self.head)
         self.ring.setFixedSize(13, 13)
@@ -321,7 +319,7 @@ class ToolCard(QFrame):
         self.out.setStyleSheet(
             f"QTextBrowser {{ background:{p['code_bg']}; color:{p['text']}; border:1px solid {p['border']};"
             f" border-radius:8px; margin-left:22px; padding:6px 10px;"
-            f" font-family:{MONO_FONT}; font-size:9pt; }}")
+            f" font-family:{mono_css()}; font-size:{code_pt(-0.5)}; }}")
         self.out.setMaximumHeight(0)
         self.out.hide()
         lay.addWidget(self.out)
@@ -439,7 +437,7 @@ class ApprovalCard(QFrame):
         t.setTextFormat(Qt.RichText)
         d = QLabel(detail, self)
         d.setWordWrap(True)
-        d.setStyleSheet(f"color:{p['muted']}; font-family:{MONO_FONT}; font-size:9pt; background:transparent;")
+        d.setStyleSheet(f"color:{p['muted']}; font-family:{mono_css()}; font-size:{code_pt(-0.5)}; background:transparent;")
         row = QHBoxLayout()
         self.allow = PrimaryPushButton("Allow", self)
         self.deny = PushButton("Deny", self)

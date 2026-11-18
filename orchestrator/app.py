@@ -5,7 +5,7 @@ import asyncio
 import sys
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 
@@ -78,28 +78,22 @@ def main() -> int:
     defer_qfw_image_utils()  # skip numpy/scipy/PIL until something actually blurs an image
 
     import qasync
-    from qfluentwidgets import Theme, setFontFamilies, setTheme, setThemeColor
 
     from orchestrator.core.scheduler import ScheduleRunner
     from orchestrator.core.session_index import SessionIndexer
     from orchestrator.core.session_manager import SessionManager
     from orchestrator.storage.db import Database
     from orchestrator.ui.main_window import MainWindow
-    from orchestrator.ui.theme import ACCENTS, UI_FONT, UI_FONTS
 
     startup.mark("imports")
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName("Orchestrator")
     app.setOrganizationName("Orchestrator")
-    font = QFont(UI_FONT)
-    font.setPointSizeF(10)
-    app.setFont(font)
-    setFontFamilies(UI_FONTS)
-
     db = Database()
-    setTheme({"Dark": Theme.DARK, "Light": Theme.LIGHT, "Auto": Theme.AUTO}[db.get_setting("ui.theme", "Dark")])
-    setThemeColor(ACCENTS.get(db.get_setting("ui.accent", "Sky"), ACCENTS["Sky"]))
+    from orchestrator.ui import appearance
+
+    appearance.apply(appearance.load(db), emit=False)  # fonts, sizes, density, theme, accent (Settings › Appearance)
 
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)

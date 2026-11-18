@@ -27,6 +27,44 @@ STATUS_COLORS = {
 
 ENGINE_COLORS = {"claude": "#d97757", "codex": "#10a37f"}
 
+# Current look (Settings › Appearance). orchestrator.ui.appearance fills this in at startup and on every change;
+# widgets read it through the helpers below when they are built.
+LOOK: dict = {"font": UI_FONT, "ui_size": 10.0, "chat_size": 10.5, "code_font": "Cascadia Code", "code_size": 9.5,
+              "density": "Comfortable"}
+
+
+def ui_families() -> list[str]:
+    fam = LOOK["font"]
+    return [fam] + [f for f in UI_FONTS if f != fam]
+
+
+def chat_font(delta: float = 0.0):
+    from PySide6.QtGui import QFont
+
+    f = QFont(LOOK["font"])
+    f.setPointSizeF(max(6.0, float(LOOK["chat_size"]) + delta))
+    return f
+
+
+def mono_css() -> str:
+    """CSS font-family list for code, starting with the chosen code font."""
+    fam = LOOK["code_font"]
+    rest = [x.strip() for x in MONO_FONT.split(",") if x.strip() != fam]
+    return ", ".join([fam, *rest])
+
+
+def code_pt(delta: float = 0.0) -> str:
+    return f"{max(6.0, float(LOOK['code_size']) + delta):g}pt"
+
+
+def compact() -> bool:
+    return LOOK["density"] == "Compact"
+
+
+def space(n: int) -> int:
+    """Spacing/padding scaled for the density setting."""
+    return max(1, round(n * 0.6)) if compact() else n
+
 
 def c(dark: str, light: str) -> str:
     return dark if isDarkTheme() else light

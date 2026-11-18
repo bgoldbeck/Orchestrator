@@ -432,10 +432,10 @@ class SettingsPage(SmoothScrollArea):
         lay.addSpacing(6)
         lay.addWidget(SubtitleLabel("Appearance", body))
         f2, fl2 = card(body)
-        fl2.addLayout(self._combo_row(f2, "Theme", "Applies immediately.", "ui.theme", ["Dark", "Light", "Auto"], "Dark",
-                                      on_change=self._apply_theme))
-        fl2.addLayout(self._combo_row(f2, "Accent color", "", "ui.accent", list(ACCENTS), "Sky",
-                                      on_change=lambda v: setThemeColor(ACCENTS[v])))
+        from orchestrator.ui.appearance_card import AppearanceCard
+
+        self.appearance = AppearanceCard(db, f2)
+        fl2.addWidget(self.appearance)
         lay.addWidget(f2)
 
         lay.addSpacing(6)

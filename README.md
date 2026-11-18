@@ -255,6 +255,25 @@ off, shows a warning.
 ![Rules table](docs/screenshots/prefs-settings.png)
 ![Preference offer and cards](docs/screenshots/prefs-board.png)
 
+## Appearance
+
+Settings › **Appearance** has these settings:
+
+- Theme: Dark, Light or System (follows Windows).
+- Accent color: five presets, or any color through Custom….
+- Font for the whole app.
+- UI font size: menus, buttons and labels. Default 10 pt.
+- Chat font size: messages and the prompt box. Default 10.5 pt.
+- Code font and code size: code blocks, inline code and tool output.
+- Density: Comfortable or Compact. Compact gives tighter chat spacing and shorter sidebar rows.
+
+Every change applies right away and is saved. A preview made of real chat widgets (a user message, an answer and a
+code block) updates as you change things. Open chats re-render; a chat that is streaming re-renders when its turn
+ends. Reset to defaults puts everything back.
+
+![Appearance, defaults](docs/screenshots/appearance-dark.png)
+![Appearance, light and compact](docs/screenshots/appearance-light.png)
+
 ## Run
 
 ```

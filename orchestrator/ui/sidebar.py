@@ -47,7 +47,10 @@ class ChatRowDelegate(TreeItemDelegate):
 
     def sizeHint(self, option, index):  # noqa: N802
         sz = super().sizeHint(option, index)
-        return QSize(sz.width(), 30 if index.data(ROLE_KIND) == "header" else 32)
+        from orchestrator.ui.theme import compact
+
+        return QSize(sz.width(), (26 if compact() else 30) if index.data(ROLE_KIND) == "header"
+                     else (26 if compact() else 32))
 
     def initStyleOption(self, option, index) -> None:  # noqa: N802
         super().initStyleOption(option, index)
@@ -159,6 +162,9 @@ class Sidebar(QFrame):
         lay.addLayout(head)
 
         self.tree = TreeWidget(self)
+        from orchestrator.ui.appearance import hub
+
+        hub.changed.connect(lambda: (self.tree.doItemsLayout(), self.tree.viewport().update()))
         self.tree.setHeaderHidden(True)
         self.tree.setIndentation(14)
         self.tree.setIconSize(QSize(14, 14))
