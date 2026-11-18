@@ -46,10 +46,10 @@ def _when(ts: float | None) -> str:
 
 
 def window_text(w: U.Window) -> str:
-    if w.used_percent is None:
+    if w.remaining_pct is None:
         head = f"{w.label}: no percentage reported"
     else:
-        head = f"{w.label}: {w.used_percent:.0f}% used" + ("" if w.exact else " (estimate)")
+        head = f"{w.label}: {w.used_pct:.0f}% used · {w.remaining_pct:.0f}% left" + ("" if w.exact else " (estimate)")
     if w.resets_at:
         head += f" · resets {_when(w.resets_at)}"
     if w.status == "allowed_warning":
@@ -90,7 +90,8 @@ class UsagePill(QWidget):
         f.setPointSizeF(8.5)
         from PySide6.QtGui import QFontMetrics
 
-        return QSize(QFontMetrics(f).horizontalAdvance(self.name) + 18 + 58 + 30, 30)
+        fm = QFontMetrics(f)
+        return QSize(fm.horizontalAdvance(self.name) + 18 + 58 + 8 + fm.horizontalAdvance("100% left") + 10, 30)
 
     def set_usage(self, u: U.ProviderUsage) -> None:
         self.usage = u
@@ -139,16 +140,17 @@ class UsagePill(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(qcolor(pal["border"]))
             p.drawRoundedRect(track, 1.5, 1.5)
-            if w and w.used_percent is not None:
-                col = QColor(LEVEL_COLORS[U.level(w.used_percent)])
+            if w and w.remaining_pct is not None:  # the bar fills with what is LEFT
+                col = QColor(LEVEL_COLORS[U.level(w.remaining_pct)])
                 if not w.exact:
                     col.setAlphaF(0.55)
                 p.setBrush(col)
-                p.drawRoundedRect(QRectF(x, y, max(3.0, bw * min(100.0, w.used_percent) / 100), 3), 1.5, 1.5)
-        known = [w.used_percent for w in windows if w.used_percent is not None]
-        pct = f"{max(known):.0f}%" if known else "—"  # the tighter of the two windows
+                p.drawRoundedRect(QRectF(x, y, max(3.0, bw * w.remaining_pct / 100), 3), 1.5, 1.5)
+        tight = U.tightest(windows)
+        pct = f"{tight.remaining_pct:.0f}% left" if tight else "—"  # what limits you first
         p.setPen(qcolor(pal["text"]))
-        p.drawText(QRectF(x + bw + 6, r.top(), 34, r.height()), Qt.AlignVCenter | Qt.AlignLeft, pct)
+        p.drawText(QRectF(x + bw + 6, r.top(), r.right() - (x + bw + 6) - 4, r.height()),
+                   Qt.AlignVCenter | Qt.AlignLeft, pct)
         p.end()
 
 
@@ -246,7 +248,7 @@ class Spark(QWidget):
             y = r.bottom() - min(100.0, pt["v"]) / 100 * r.height()
             path.moveTo(x, y) if i == 0 else path.lineTo(x, y)
         pen = p.pen()
-        pen.setColor(QColor(LEVEL_COLORS[U.level(self.points[-1]["v"])]))
+        pen.setColor(QColor(LEVEL_COLORS[U.level(self.points[-1]["v"])]))  # samples are percent left
         pen.setWidthF(1.6)
         p.setPen(pen)
         p.drawPath(path)
@@ -270,13 +272,16 @@ class WindowRow(QWidget):
                             " font-size:8pt; background:transparent; }}")
         top.addWidget(badge)
         top.addStretch(1)
-        pct = BodyLabel("—" if w.used_percent is None else f"{w.used_percent:.0f}% used", self)
+        pct = BodyLabel("—" if w.remaining_pct is None else f"{w.remaining_pct:.0f}% left", self)
+        pct.setObjectName("leftLabel")
+        if w.remaining_pct is not None:
+            pct.setToolTip(f"{w.used_pct:.0f}% used · {w.remaining_pct:.0f}% left")
         top.addWidget(pct)
         lay.addLayout(top)
         bar = QFrame(self)
         bar.setFixedHeight(8)
-        level = U.level(w.used_percent)
-        frac = 0 if w.used_percent is None else max(0.0, min(1.0, w.used_percent / 100))
+        level = U.level(w.remaining_pct)
+        frac = 0 if w.remaining_pct is None else w.remaining_pct / 100
         bar.setStyleSheet(
             "QFrame { border-radius:4px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
             f"stop:0 {LEVEL_COLORS[level]}, stop:{max(0.001, frac):.3f} {LEVEL_COLORS[level]}, "
@@ -325,8 +330,9 @@ class UsagePage(SmoothScrollArea):
         head = QHBoxLayout()
         tcol = QVBoxLayout()
         tcol.addWidget(TitleLabel("Usage", body))
-        sub = CaptionLabel("Plan limits per provider: the 5-hour window and the weekly window. Green under 70%, "
-                           "amber from 70%, red from 90%.", body)
+        sub = CaptionLabel("Plan limits per provider: the 5-hour window and the weekly window, shown as percent "
+                           "left for every provider. Bars fill with what is left: green above 30% left, amber "
+                           "10–30%, red under 10%.", body)
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color:{palette()['muted']};")
         tcol.addWidget(sub)
