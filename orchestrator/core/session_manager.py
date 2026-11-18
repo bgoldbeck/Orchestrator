@@ -17,6 +17,7 @@ from orchestrator.core.events import (
     ToolCall,
     ToolResult,
     Usage,
+    RateLimit,
 )
 from orchestrator.engines.base import AgentAdapter, TurnRequest
 from orchestrator.engines.claude import ClaudeAdapter
@@ -174,6 +175,12 @@ class SessionManager(QObject):
                     self.db.add_message(sid, "system", "error", {"text": ev.message, "fatal": ev.fatal, "level": ev.kind})
                     if ev.fatal:
                         final_status = "error"
+                elif isinstance(ev, RateLimit):
+                    from orchestrator.core.usage import record_claude_rate_limit
+
+                    if ev.engine == "claude":
+                        record_claude_rate_limit(self.db, {"rate_limit_type": ev.window, "status": ev.status,
+                                                           "utilization": ev.utilization, "resets_at": ev.resets_at})
                 elif isinstance(ev, Usage):
                     self.db.add_message(sid, "system", "usage", {
                         "input": ev.input_tokens, "output": ev.output_tokens, "cached": ev.cached_tokens, "cost": ev.cost_usd})
