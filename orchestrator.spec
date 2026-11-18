@@ -13,6 +13,8 @@ hiddenimports += collect_submodules(
     "mcp", filter=lambda n: not n.startswith(("mcp.cli", "mcp.server.fastmcp")))
 datas += collect_data_files("mcp")
 hiddenimports += collect_submodules("orchestrator")
+# qfluentwidgets' media-player widgets are never used: leave them (and QtMultimedia) out
+hiddenimports = [h for h in hiddenimports if not h.startswith("qfluentwidgets.multimedia")]
 hiddenimports += ["keyring.backends.Windows", "sqlalchemy.dialects.sqlite", "win32ctypes.core"]
 
 a = Analysis(
@@ -22,7 +24,8 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     excludes=["tkinter", "pytest", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
-              "PySide6.QtQuick3D", "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization"],
+              "PySide6.QtQuick3D", "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets", "PySide6.QtCharts",
+              "PySide6.QtDataVisualization", "qfluentwidgets.multimedia"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

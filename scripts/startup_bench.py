@@ -99,9 +99,10 @@ def importtime(top: int = 15) -> None:
     rows = []
     for line in r.stderr.splitlines():
         if line.startswith("import time:") and "|" in line:
-            parts = [x.strip() for x in line[len("import time:"):].split("|")]
+            raw = line[len("import time:"):].split("|")
+            parts = [x.strip() for x in raw]
             if parts[0].isdigit():
-                rows.append((int(parts[1]), parts[2]))
+                rows.append((int(parts[1]), raw[2][1:].rstrip()))  # keep the nesting indent
     top_level = [(us, name) for us, name in rows if not name.startswith(" ")]
     print(f"\nTop {top} top-level imports by cumulative time (python -X importtime run.py):")
     for us, name in sorted(top_level, reverse=True)[:top]:

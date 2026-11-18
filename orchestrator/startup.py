@@ -11,7 +11,8 @@ import time
 _LOG = os.environ.get("ORCHESTRATOR_STARTUP_LOG")
 _seen: set[str] = set()
 _ready_parts: set[str] = set()
-READY_NEEDS = {"first_paint", "sessions"}  # window painted + session list refreshed from disk
+# window painted + session list refreshed from disk + every page and service set up
+READY_NEEDS = {"first_paint", "sessions", "deferred"}
 on_ready = None  # set by the app: called once when everything is loaded
 
 
