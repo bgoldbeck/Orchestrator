@@ -390,7 +390,13 @@ class SettingsPage(SmoothScrollArea):
         fol.addLayout(self._keyed_row(fo, "Session summaries", "Written when a chat goes idle; used to find chats "
                                       "to reuse. Cheap model = the last enabled model in the list above.",
                                       "summaries.mode", MODES, "model"))
-        gl = BodyLabel("Routing guide", fo)
+        from orchestrator.ui.rules_card import RulesCard
+
+        fol.addWidget(BodyLabel("Model preferences", fo))
+        self.rules = RulesCard(db, fo)
+        self.models.changed.connect(self.rules.load)  # enabling/disabling models changes which rules apply
+        fol.addWidget(self.rules)
+        gl = BodyLabel("Routing guide (used when no rule matches)", fo)
         fol.addWidget(gl)
         gs = CaptionLabel("Shown to the planner when it picks engine, model and effort. Edit freely.", fo)
         gs.setStyleSheet(f"color:{palette()['muted']};")

@@ -50,7 +50,7 @@ def main() -> int:
     print(f"exe: {EXE} (folder {size / 1e6:.0f} MB)")
     names = asyncio.run(mcp_check())
     print("mcp tools:", names)
-    ok = names == ["ask_user", "delegate", "find_projects", "find_sessions", "send_to_task", "task_status", "wait_for"]
+    ok = names == ["ask_user", "delegate", "find_projects", "find_sessions", "send_to_task", "suggest_preference", "task_status", "wait_for"]
     ok = gui_check() and ok
     print("BUILD CHECK", "PASS" if ok else "FAIL")
     return 0 if ok else 1

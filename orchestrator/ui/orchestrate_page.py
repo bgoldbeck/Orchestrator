@@ -858,7 +858,8 @@ class OrchestratePage(SmoothScrollArea):
 
     def _render_questions(self, orch: Orchestration) -> None:
         qs = self.db.open_questions(orch.id)
-        key = tuple(q.id for q in qs)
+        offers = list(self.om.rule_offers.get(orch.id, []))
+        key = (tuple(q.id for q in qs), tuple(o["id"] for o in offers))
         if key == self._q_shown:
             return
         self._q_shown = key
@@ -895,6 +896,45 @@ class OrchestratePage(SmoothScrollArea):
             row.addWidget(send)
             bl.addLayout(row)
             self.qlay.addWidget(box)
+        for o in offers:
+            self.qlay.addWidget(self._offer_box(orch.id, o))
+
+    def _offer_box(self, oid: int, offer: dict) -> QFrame:
+        """'Save as a preference rule?' for a 'prefer X for Y' the user said."""
+        p = palette()
+        box = QFrame(self.questions)
+        box.setObjectName("ruleOffer")
+        box.setStyleSheet(f"#ruleOffer {{ background:{p['card']}; border:1px solid {p['border']}; border-radius:8px; }}")
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(12, 8, 8, 8)
+        head = CaptionLabel("SAVE AS A PREFERENCE RULE?", box)
+        head.setStyleSheet(f"color:{p['muted']}; font-weight:600;")
+        bl.addWidget(head)
+        row = QHBoxLayout()
+        txt = BodyLabel(offer["text"], box)
+        txt.setWordWrap(True)
+        row.addWidget(txt, 1)
+        no = PushButton("Dismiss", box)
+        yes = PrimaryPushButton("Save rule", box)
+        yes.setObjectName("saveRule")
+        for b in (no, yes):
+            b.setMinimumWidth(b.sizeHint().width())
+        no.clicked.connect(lambda _=False: self.om.resolve_offer(oid, offer["id"], False))
+        yes.clicked.connect(lambda _=False: self._save_offer(oid, offer))
+        row.addWidget(no)
+        row.addWidget(yes)
+        bl.addLayout(row)
+        if offer.get("warning"):
+            w = CaptionLabel("⚠ " + offer["warning"], box)
+            w.setWordWrap(True)
+            w.setStyleSheet(f"color:{STATUS_COLORS['waiting']};")
+            bl.addWidget(w)
+        return box
+
+    def _save_offer(self, oid: int, offer: dict) -> None:
+        self.om.resolve_offer(oid, offer["id"], True)
+        InfoBar.success("Rule saved", offer["text"] + " — edit it in Settings › Orchestrator", parent=self.window(),
+                        position=InfoBarPosition.TOP_RIGHT, duration=4000)
 
     def _planner_line(self, orch: Orchestration) -> str:
         if not orch.session_id:
