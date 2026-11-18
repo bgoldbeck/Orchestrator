@@ -141,6 +141,19 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   (`Orchestrator.exe --mcp-server`), so the built app needs no Python. Codex still comes from your own
   `codex` install on PATH.
 
+## Chat view
+
+![Chat](docs/screenshots/chat-polish.png)
+
+- Lighter layout: tighter spacing, soft user bubbles, tool calls as compact one-line rows (click to see output),
+  paths shown relative to the chat's folder.
+- The engine · model · effort picker sits in the composer, left of Send, so you always see what the next message
+  will use. The header only has the title, folder, usage and the Changes button.
+- Imported transcripts hide text the agent harness injected (`<system-reminder>`, `<command-name>`, `<wake>`
+  envelopes and similar). The person's words inside an envelope are kept; hidden blocks show as a small
+  "system context" chip (hover for what was hidden). The same text is kept out of titles, summaries and search,
+  and titles saved before this are cleaned on startup.
+
 ## Fast startup
 
 The window appears first and fills in after the first paint:

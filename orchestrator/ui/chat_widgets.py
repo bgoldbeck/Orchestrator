@@ -203,23 +203,22 @@ class AssistantMessage(QWidget):
         super().__init__(parent)
         self.text = text
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 4, 0, 4)
-        lay.setSpacing(6)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(4)
         head = QHBoxLayout()
-        head.setSpacing(8)
+        head.setSpacing(6)
         badge = QLabel(self)
-        badge.setPixmap(engine_badge(engine))
-        badge.setFixedSize(22, 22)
+        badge.setPixmap(engine_badge(engine).scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        badge.setFixedSize(16, 16)
         name = CaptionLabel(label, self)
-        name.setStyleSheet(f"color:{palette()['muted']}; font-weight:600;")
+        name.setStyleSheet(f"color:{palette()['muted']};")
         head.addWidget(badge)
         head.addWidget(name)
         head.addStretch(1)
         lay.addLayout(head)
         self.body = MarkdownView(text, self)
-        self.body.setContentsMargins(30, 0, 0, 0)
         wrap = QHBoxLayout()
-        wrap.setContentsMargins(30, 0, 0, 0)
+        wrap.setContentsMargins(22, 0, 0, 0)
         wrap.addWidget(self.body)
         lay.addLayout(wrap)
         self.dots: TypingDots | None = None
@@ -234,13 +233,13 @@ class UserMessage(QWidget):
         super().__init__(parent)
         p = palette()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(80, 6, 0, 6)
+        lay.setContentsMargins(96, 2, 0, 2)
         lay.addStretch(1)
         bubble = QFrame(self)
         bubble.setObjectName("userBubble")
-        bubble.setStyleSheet(f"#userBubble {{ background:{p['user_bubble']}; border-radius:16px; border-bottom-right-radius:6px; }}")
+        bubble.setStyleSheet(f"#userBubble {{ background:{p['user_bubble']}; border-radius:12px; }}")
         bl = QVBoxLayout(bubble)
-        bl.setContentsMargins(14, 10, 14, 10)
+        bl.setContentsMargins(12, 7, 12, 7)
         lbl = QLabel(bubble)
         lbl.setTextFormat(Qt.PlainText)
         lbl.setText(text)
@@ -250,6 +249,9 @@ class UserMessage(QWidget):
         f.setPointSizeF(10.5)
         lbl.setFont(f)
         lbl.setStyleSheet(f"color:{p['text']}; background:transparent;")
+        # short messages stay on one line instead of wrapping into a narrow column
+        longest = max((lbl.fontMetrics().horizontalAdvance(line) for line in text.splitlines() or [""]), default=0)
+        lbl.setMinimumWidth(min(longest + 4, 520))
         bl.addWidget(lbl)
         bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
         lay.addWidget(bubble)
@@ -278,8 +280,8 @@ class ToolCard(QFrame):
         p = palette()
         self.setObjectName("toolCard")
         self.setStyleSheet(
-            f"#toolCard {{ background:{p['card']}; border:1px solid {p['border']}; border-radius:10px; }}"
-            f"#toolHead:hover {{ background:{p['card_hover']}; border-radius:10px; }}")
+            "#toolCard { background:transparent; border:none; }"
+            f"#toolHead {{ border-radius:8px; }} #toolHead:hover {{ background:{p['card_hover']}; }}")
         icon, title = TOOL_META.get(name, (FIF.DEVELOPER_TOOLS, f"Used {name}"))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -288,20 +290,20 @@ class ToolCard(QFrame):
         self.head.setObjectName("toolHead")
         self.head.setCursor(Qt.PointingHandCursor)
         hl = QHBoxLayout(self.head)
-        hl.setContentsMargins(12, 8, 10, 8)
-        hl.setSpacing(10)
+        hl.setContentsMargins(22, 4, 8, 4)
+        hl.setSpacing(8)
         ic = IconWidget(icon, self.head)
-        ic.setFixedSize(15, 15)
-        t = BodyLabel(title, self.head)
-        t.setStyleSheet("font-weight:600;")
+        ic.setFixedSize(13, 13)
+        t = CaptionLabel(title, self.head)
+        t.setStyleSheet(f"color:{p['muted']};")
         self.summary = QLabel(summary, self.head)
-        self.summary.setStyleSheet(f"color:{p['muted']}; font-family:{MONO_FONT}; font-size:9pt; background:transparent;")
+        self.summary.setStyleSheet(f"color:{p['faint']}; font-family:{MONO_FONT}; font-size:8.5pt; background:transparent;")
         self.summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.ring = IndeterminateProgressRing(self.head)
-        self.ring.setFixedSize(16, 16)
+        self.ring.setFixedSize(13, 13)
         self.ring.setStrokeWidth(2)
         self.state = IconWidget(FIF.ACCEPT, self.head)
-        self.state.setFixedSize(14, 14)
+        self.state.setFixedSize(11, 11)
         self.state.hide()
         self.chev = IconWidget(FIF.CHEVRON_RIGHT_MED, self.head)
         self.chev.setFixedSize(10, 10)
@@ -317,8 +319,8 @@ class ToolCard(QFrame):
         self.out.setFrameShape(QFrame.NoFrame)
         self.out.setLineWrapMode(QTextBrowser.NoWrap)
         self.out.setStyleSheet(
-            f"QTextBrowser {{ background:{p['code_bg']}; color:{p['text']}; border-top:1px solid {p['border']};"
-            f" border-bottom-left-radius:10px; border-bottom-right-radius:10px; padding:8px 12px;"
+            f"QTextBrowser {{ background:{p['code_bg']}; color:{p['text']}; border:1px solid {p['border']};"
+            f" border-radius:8px; margin-left:22px; padding:6px 10px;"
             f" font-family:{MONO_FONT}; font-size:9pt; }}")
         self.out.setMaximumHeight(0)
         self.out.hide()
@@ -389,7 +391,7 @@ class WarningLine(QWidget):
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(30, 0, 0, 0)
+        lay.setContentsMargins(22, 0, 0, 0)
         lay.setSpacing(6)
         ic = IconWidget(FIF.INFO, self)
         ic.setFixedSize(12, 12)
@@ -401,6 +403,25 @@ class WarningLine(QWidget):
         self.installEventFilter(ToolTipFilter(self))
         lay.addWidget(ic)
         lay.addWidget(lbl, 1)
+
+
+class ContextChip(QWidget):
+    """Muted marker where harness/system text was hidden from an imported transcript."""
+
+    def __init__(self, tags: list[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addStretch(1)
+        chip = QLabel("system context", self)
+        chip.setObjectName("contextChip")
+        p = palette()
+        chip.setStyleSheet(f"#contextChip {{ color:{p['faint']}; border:1px solid {p['border']}; border-radius:8px;"
+                           " padding:1px 8px; font-size:8pt; background:transparent; }}")
+        names = ", ".join(t for t in tags if t != "tag") or "system"
+        chip.setToolTip(f"Hidden harness text: {names}")
+        chip.installEventFilter(ToolTipFilter(chip))
+        lay.addWidget(chip)
 
 
 class ApprovalCard(QFrame):
@@ -452,5 +473,5 @@ class UsageLine(QLabel):
             parts.append(f"${cost:.4f}")
         super().__init__("  ·  ".join(parts), parent)
         self.setAlignment(Qt.AlignLeft)
-        self.setContentsMargins(30, 0, 0, 0)
+        self.setContentsMargins(22, 0, 0, 0)
         self.setStyleSheet(f"color:{palette()['faint']}; font-size:8.5pt; background:transparent;")

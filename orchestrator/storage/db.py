@@ -236,7 +236,23 @@ class Database:
                           "WHERE status IN ('proposed','queued','running','waiting')")
         self.conn.execute("UPDATE orchestrations SET status='stopped' WHERE status='running'")
         self.conn.execute("DELETE FROM projects WHERE auto=1 AND id NOT IN (SELECT project_id FROM sessions)")
+        self._clean_harness_text()
         self.conn.commit()
+
+    def _clean_harness_text(self) -> None:
+        """Titles/summaries saved before harness markup was stripped (e.g. '<wake reason=...>')."""
+        from orchestrator.core.harness_text import clean
+        from orchestrator.ui_text import short_title
+
+        rows = self.conn.execute(
+            "SELECT id, title, summary, keywords FROM sessions WHERE title LIKE '%<%' OR title LIKE '%&lt;%' "
+            "OR summary LIKE '%<%' OR summary LIKE '%&lt;%'").fetchall()
+        for r in rows:
+            title = short_title(clean(r["title"] or "")) or "Untitled chat"
+            summary = clean(r["summary"]) if r["summary"] else r["summary"]
+            keywords = r["keywords"] if summary == r["summary"] else None  # re-derive with the summary
+            self.conn.execute("UPDATE sessions SET title=?, summary=?, keywords=? WHERE id=?",
+                              (title, summary or None, keywords, r["id"]))
 
     # -- settings
     def get_setting(self, key: str, default: Any = None) -> Any:
@@ -578,7 +594,9 @@ class Database:
                 "ORDER BY s.last_active DESC, m.id DESC LIMIT ?", (like, limit * 4)):
             if r["sid"] in out:
                 continue
-            text = json.loads(r["cj"]).get("text", "")
+            from orchestrator.core.harness_text import clean
+
+            text = clean(json.loads(r["cj"]).get("text", ""))
             i = text.lower().find(q)
             if i < 0:
                 continue

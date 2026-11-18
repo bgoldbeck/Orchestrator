@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from orchestrator.core.harness_text import clean, strip_harness
 from orchestrator.ui_text import short_title
 
 UUID_RE = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$", re.I)
@@ -92,6 +93,14 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+def _context_chip(out: list[dict[str, Any]], tags: list[str]) -> None:
+    """Harness text was hidden here: one small 'system context' marker (merged with a previous one)."""
+    if out and out[-1].get("kind") == "context":
+        out[-1]["tags"] = sorted(set(out[-1]["tags"]) | set(tags))
+    else:
+        out.append({"role": "system", "kind": "context", "tags": sorted(set(tags))})
+
+
 def is_noise(text: str) -> bool:
     t = text.lstrip()
     return not t or t.startswith(NOISE_PREFIXES)
@@ -112,9 +121,9 @@ def parse_claude_file(path: Path) -> SessionInfo | None:
             m = str(d["message"]["model"])
             model = model if m.startswith("<") else m
         if t == "custom-title" and d.get("customTitle"):
-            title = str(d["customTitle"])
+            title = clean(str(d["customTitle"]))
         elif t == "summary" and d.get("summary"):
-            summary = str(d["summary"])
+            summary = clean(str(d["summary"]))
         if t not in ("user", "assistant") or d.get("isSidechain"):
             continue
         cwd = cwd or d.get("cwd")
@@ -123,7 +132,7 @@ def parse_claude_file(path: Path) -> SessionInfo | None:
             first_ts = first_ts or ts
             last_ts = ts
         if t == "user" and not d.get("isMeta"):
-            text = _text_of((d.get("message") or {}).get("content"))
+            text = clean(_text_of((d.get("message") or {}).get("content")))
             if text and not is_noise(text):
                 turns += 1
                 first_user = first_user or text
@@ -158,7 +167,10 @@ def load_claude_history(path: Path) -> list[dict[str, Any]]:
                             call["is_error"] = bool(b.get("is_error"))
             if d.get("isMeta"):
                 continue
-            text = _text_of(content)
+            raw = _text_of(content)
+            text, removed = strip_harness(raw)
+            if removed or (raw and is_noise(raw)):
+                _context_chip(out, removed or ["system"])
             if text and not is_noise(text):
                 out.append({"role": "user", "kind": "text", "text": text})
         else:
@@ -168,10 +180,13 @@ def load_claude_history(path: Path) -> list[dict[str, Any]]:
                 if not isinstance(b, dict):
                     continue
                 if b.get("type") == "text" and b.get("text"):
+                    text = clean(b["text"])
+                    if not text:
+                        continue
                     if out and out[-1]["role"] == "assistant" and out[-1]["kind"] == "text":
-                        out[-1]["text"] += "\n\n" + b["text"]
+                        out[-1]["text"] += "\n\n" + text
                     else:
-                        out.append({"role": "assistant", "kind": "text", "text": b["text"]})
+                        out.append({"role": "assistant", "kind": "text", "text": text})
                 elif b.get("type") == "tool_use":
                     from orchestrator.engines.claude import tool_summary
 
@@ -240,14 +255,14 @@ def parse_codex_file(path: Path, titles: dict[str, str] | None = None) -> Sessio
             et = p.get("type")
             text = ""
             if et == "item_completed" and (p.get("item") or {}).get("type") == "UserMessage":
-                text = _text_of(p["item"].get("content"))
+                text = clean(_text_of(p["item"].get("content")))
             elif et == "user_message":
-                text = str(p.get("message", ""))
+                text = clean(str(p.get("message", "")))
             if text and not is_noise(text):
                 turns += 1
                 first_user = first_user or text
         elif t == "response_item" and p.get("type") == "message" and p.get("role") == "user":
-            text = _text_of(p.get("content"))
+            text = clean(_text_of(p.get("content")))
             if text and not is_noise(text):
                 fallback_user = fallback_user or text
     if not sid:
@@ -257,7 +272,7 @@ def parse_codex_file(path: Path, titles: dict[str, str] | None = None) -> Sessio
     if not sid or not first_user:
         return None
     st = path.stat()
-    title = (titles or {}).get(sid) or first_user
+    title = clean((titles or {}).get(sid) or "") or first_user
     return SessionInfo("codex", sid, cwd or "", short_title(title), first_ts or st.st_mtime,
                        last_ts or st.st_mtime, str(path), st.st_mtime, max(turns, 1), model, effort)
 
@@ -269,7 +284,10 @@ def load_codex_history(path: Path) -> list[dict[str, Any]]:
     has_events = any(t == "event_msg" and p.get("type") in ("user_message", "agent_message") for t, p, _ in items)
     out: list[dict[str, Any]] = []
 
-    def add_text(role: str, text: str) -> None:
+    def add_text(role: str, raw: str) -> None:
+        text, removed = strip_harness(raw)
+        if removed or (role == "user" and raw and is_noise(raw)):
+            _context_chip(out, removed or ["system"])
         if text and not (role == "user" and is_noise(text)):
             out.append({"role": role, "kind": "text", "text": text})
 
