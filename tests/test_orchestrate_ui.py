@@ -129,6 +129,7 @@ def test_reuse_card_question_box_and_auto_planner(env, qapp):
     from orchestrator.ui.orchestrate_page import OrchestratePage
 
     db, proj, mgr, om, loop = env
+    db.set_setting("routing.rules", [])
     db.set_setting("orchestrate.confirm", "always_ask")
     old = db.create_session(proj.id, "claude", "claude-sonnet-5-5", "medium", title="Fix login bug")
     db.add_message(old.id, "user", "text", {"text": "login"})

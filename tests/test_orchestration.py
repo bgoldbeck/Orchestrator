@@ -237,7 +237,7 @@ def test_mcp_server_exposes_tools():
     async def names():
         return sorted(t.name for t in await build_server().list_tools())
 
-    assert asyncio.get_event_loop().run_until_complete(names()) == ["ask_user", "delegate", "find_projects", "find_sessions", "send_to_task",
+    assert asyncio.get_event_loop().run_until_complete(names()) == ["ask_user", "delegate", "find_projects", "find_sessions", "send_to_task", "suggest_preference",
                                                                      "task_status", "wait_for"]
 
 

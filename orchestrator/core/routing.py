@@ -46,6 +46,27 @@ def guide(db: Database) -> str:
     return db.get_setting("routing.guide") or DEFAULT_GUIDE
 
 
+def planner_guide(db: Database) -> str:
+    """What the planner prompt shows: the user's preference rules first, then the routing guide."""
+    from orchestrator.core import preferences
+
+    block = preferences.prompt_block(db)
+    return (block + "\n\nOtherwise:\n" if block else "") + guide(db)
+
+
+def preferred(db: Database, text: str, engine: str = "") -> Pick | None:
+    """A Pick from the first matching preference rule (enabled models only), or None."""
+    from orchestrator.core import preferences
+
+    hit = preferences.match(db, text, engine)
+    if not hit:
+        return None
+    r, kw = hit
+    m = next(x for x in model_registry.allowed(db, r.engine) if x.id == r.model)
+    eff = _effort(m, r.effort) if r.effort else _effort(m, "medium")
+    return Pick(r.engine, m.id, eff, f"Preference: {r.name} → {m.label} · {eff} (matched “{kw}”)")
+
+
 def difficulty(text: str) -> tuple[str, str]:
     """('easy'|'medium'|'hard', short why) from the task text."""
     t = text or ""
@@ -81,7 +102,11 @@ def _tier(models: list[Model], level: str) -> Model:
 
 
 def route(db: Database, text: str, engine: str = "", prefer: str = "") -> Pick | None:
-    """Pick engine/model/effort for a task. `engine` forces the engine; `prefer` breaks ties."""
+    """Pick engine/model/effort for a task. `engine` forces the engine; `prefer` breaks ties.
+    The user's preference rules (Settings › Orchestrator) come first."""
+    pref = preferred(db, text, engine)
+    if pref:
+        return pref
     level, why = difficulty(text)
     avail = model_registry.available_engines(db)
     if not avail:
@@ -101,7 +126,12 @@ def route(db: Database, text: str, engine: str = "", prefer: str = "") -> Pick |
 
 
 def route_planner(db: Database, goal: str, prefer: str = "") -> Pick | None:
-    """Planner pick for Auto: strongest model of the fitting engine; high effort for hard goals."""
+    """Planner pick for Auto: a matching preference rule, else the strongest model of the fitting engine
+    (high effort for hard goals)."""
+    pref = preferred(db, goal)
+    if pref:
+        pref.reason = pref.reason.replace("Preference:", "Preference (planner):", 1)
+        return pref
     level, why = difficulty(goal)
     avail = model_registry.available_engines(db)
     if not avail:

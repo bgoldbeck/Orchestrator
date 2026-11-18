@@ -230,6 +230,31 @@ More providers (for example the Anthropic API) can be added by subclassing `Usag
 ![Usage page](docs/screenshots/usage-page.png)
 ![Usage pills](docs/screenshots/usage-bar.png)
 
+## Model preferences
+
+Settings › Orchestrator › **Model preferences** is a table of rules. Each rule maps a task type and its keywords to
+an engine, model and effort, with a priority (1 is checked first) and notes. The defaults are:
+
+- Complex coding → Opus 5.5 · medium
+- Large refactors → GPT-6.2 Sol · high
+- Quick edits and summaries → Haiku 5.5 · low
+
+How rules are used:
+
+- When the planner or a sub-agent is picked automatically, the first enabled rule whose task type or a keyword
+  appears in the text wins. The task card then says `Preference: <rule> → <model> · <effort> (matched "…")`.
+- The planner prompt lists the rules first, then the routing guide.
+- Rules whose model is disabled in Settings › Models are skipped, and the table warns about them.
+- If you say "prefer X for Y" in a goal, or to the planner (which calls the `suggest_preference` tool), the
+  Orchestrate page offers **Save rule**.
+
+Image generation: Claude Code cannot generate images. Codex can, through its built-in `image_generation` feature
+(checked with `codex features list`). A rule about images that points at Claude, or at Codex while that feature is
+off, shows a warning.
+
+![Rules table](docs/screenshots/prefs-settings.png)
+![Preference offer and cards](docs/screenshots/prefs-board.png)
+
 ## Run
 
 ```

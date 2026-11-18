@@ -95,6 +95,7 @@ def test_find_sessions_ranks_by_match_project_and_recency(tmp_path):
 # ---------------------------------------------------------------- routing
 def test_route_uses_only_allowed_models_and_gives_reason(tmp_path):
     db = Database(tmp_path / "t.db")
+    db.set_setting("routing.rules", [])  # built-in heuristics only (preference rules: test_model_preferences)
     easy = routing.route(db, "Fix a typo in README.md")
     assert easy.effort == "low" and easy.reason.startswith("Auto:") and "small task" in easy.reason
     hard = routing.route(db, "Investigate the intermittent race condition in the job scheduler")
@@ -127,6 +128,7 @@ def test_escalate_steps_effort_then_model(tmp_path):
 # ---------------------------------------------------------------- orchestration flows
 def test_auto_pick_reason_on_task_and_planner_auto(env):
     db, proj, mgr, om = env
+    db.set_setting("routing.rules", [])
     o = om.start(proj.id, "Investigate why the cache is flaky", "auto", "", "")
     assert o.engine == "claude" and o.model == "claude-opus-5-5" and o.pick_reason.startswith("Auto planner")
     r = om.delegate(o.id, "Fix a typo in README.md")

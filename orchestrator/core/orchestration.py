@@ -68,6 +68,8 @@ You coordinate sub-agents with the `orchestrator` MCP tools:
 - wait_for(task_ids) waits for tasks and returns their reports. If it says tasks are still pending, call it again.
 - task_status(task_id) checks without waiting. send_to_task(task_id, text) sends a follow-up to a finished sub-agent.
 - ask_user(question, options) asks the user and waits for the answer. Use it only when you truly cannot decide.
+- suggest_preference(task_type, keywords, engine, model, effort, notes): when the user says they prefer a model for a
+  kind of task ("prefer Opus for complex coding"), call this; the app offers to save it as a rule. It does not wait.
 
 How to work:
 1. Look at the project briefly if you need to, call find_sessions, then split the goal into a few clear tasks that
@@ -263,6 +265,7 @@ class OrchestrationManager(QObject):
         self._stopping: set[int] = set()
         self._answers: dict[int, asyncio.Event] = {}
         self._retry_text: dict[int, str] = {}  # task id -> follow-up text for an escalated retry
+        self.rule_offers: dict[int, list[dict]] = {}  # orchestration id -> offered preference rules (unsaved)
         mgr.mcp_provider = self.mcp_for
         mgr.status_changed.connect(self._on_status)
         concurrency.hub.freed.connect(self.pump_all)
@@ -299,8 +302,60 @@ class OrchestrationManager(QObject):
         self.mgr.send(s.id, self.orchestrator_prompt(orch.id))
         self.db.update_session(s.id, title=title)
         self.mgr.session_updated.emit(s.id)
+        from orchestrator.core import preferences
+
+        draft = preferences.parse_preference(self.db, goal)  # "prefer X for Y" in the goal: offer a rule
+        if draft:
+            self.offer_rule(orch.id, draft)
         self.changed.emit(orch.id)
         return self.db.orchestration(orch.id)  # type: ignore[return-value]
+
+    # ---- preference rules offered from chat
+    def offer_rule(self, oid: int, rule) -> dict:
+        from orchestrator.core import preferences
+
+        offers = self.rule_offers.setdefault(oid, [])
+        same = next((o for o in offers if o["rule"].name.lower() == rule.name.lower()
+                     and o["rule"].model == rule.model), None)
+        if same:
+            return same
+        offer = {"id": rule.id, "rule": rule, "text": f"{rule.name} → {preferences.describe(self.db, rule)}",
+                 "warning": preferences.image_warning(self.db, rule)}
+        offers.append(offer)
+        self.changed.emit(oid)
+        return offer
+
+    def resolve_offer(self, oid: int, offer_id: str, save: bool) -> None:
+        from orchestrator.core import preferences
+
+        offers = self.rule_offers.get(oid, [])
+        offer = next((o for o in offers if o["id"] == offer_id), None)
+        if not offer:
+            return
+        offers.remove(offer)
+        if save:
+            preferences.add_rule(self.db, offer["rule"])
+        self.changed.emit(oid)
+
+    def suggest_preference(self, oid: int, args: dict[str, Any]) -> dict[str, Any]:
+        from orchestrator.core import preferences
+
+        engine = str(args.get("engine") or "").strip().lower()
+        model = str(args.get("model") or "").strip()
+        if not engine and model:
+            engine = next((m.engine for m in self.db.models() if m.id == model), "")
+        if engine not in ENGINES or not any(m.id == model for m in self.db.models(engine)):
+            raise OrchestrationError(f"Unknown model {model!r}. Use an id from the model list in your instructions.")
+        task = str(args.get("task_type") or "").strip()
+        if not task:
+            raise OrchestrationError("task_type is empty.")
+        kws = args.get("keywords") or []
+        kws = preferences.split_keywords(kws) if isinstance(kws, str) else [str(k) for k in kws]
+        rule = preferences.Rule(name=task, keywords=kws or [task.lower()], engine=engine, model=model,
+                                effort=str(args.get("effort") or ""), notes=str(args.get("notes") or "Saved from chat"))
+        offer = self.offer_rule(oid, rule)
+        return {"offered": True, "rule": offer["text"], "warning": offer["warning"] or None,
+                "note": "The user sees a 'Save rule' offer in the app. Carry on with the goal."}
 
     def orchestrator_prompt(self, oid: int) -> str:
         orch = self.db.orchestration(oid)
@@ -313,7 +368,7 @@ class OrchestrationManager(QObject):
             lines.append("- (none enabled)")
         return ORCH_PROMPT.format(path=proj.path if proj else "?", goal=orch.goal if orch else "",
                                   max_parallel=orch.max_parallel if orch else 4, models="\n".join(lines),
-                                  guide=routing.guide(self.db))
+                                  guide=routing.planner_guide(self.db))
 
     def mcp_for(self, sid: int) -> dict | None:
         orch = self.db.orchestration_for_session(sid)
@@ -344,6 +399,8 @@ class OrchestrationManager(QObject):
                 "instructions", "engine", "model", "effort", "title", "cwd", "resume_session_id", "reason", "project")})
         if op == "find_projects":
             return find_projects(self.db, str(args.get("query") or ""))
+        if op == "suggest_preference":
+            return self.suggest_preference(oid, args)
         if op == "find_sessions":
             return self.find(oid, str(args.get("query") or ""), str(args.get("project") or ""))
         if op == "ask":

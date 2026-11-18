@@ -100,6 +100,19 @@ def build_server():
             "project": project}, timeout=60))
 
     @server.tool()
+    async def suggest_preference(task_type: str, model: str, engine: str = "", effort: str = "",
+                                 keywords: list[str] | None = None, notes: str = "") -> str:
+        """Offer to save the user's model preference as a rule (Settings › Orchestrator). Use it when the user says
+        something like "prefer Opus 5.5 for complex coding". The app shows a 'Save rule' offer; this does not wait.
+
+        task_type: short name of the kind of task ("Complex coding"). keywords: words that identify such tasks.
+        model: a model id from your model list; engine: claude or codex (optional when the id is unique).
+        """
+        return _dump(await bridge_call("suggest_preference", {
+            "task_type": task_type, "model": model, "engine": engine, "effort": effort,
+            "keywords": keywords or [], "notes": notes}, timeout=30))
+
+    @server.tool()
     async def ask_user(question: str, options: list[str] | None = None, question_id: int = 0) -> str:
         """Ask the user a question in the app and wait for the answer.
 
