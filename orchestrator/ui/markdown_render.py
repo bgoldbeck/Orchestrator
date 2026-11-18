@@ -11,7 +11,7 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import TextLexer, get_lexer_by_name, guess_lexer
 from pygments.util import ClassNotFound
 
-from orchestrator.ui.theme import MONO_FONT, isDarkTheme, palette
+from orchestrator.ui.theme import code_pt, isDarkTheme, mono_css, palette
 
 FENCE = re.compile(r"^(```|~~~)[ \t]*([\w+#.-]*)[^\n]*\n(.*?)(?:^\1[ \t]*$|\Z)", re.S | re.M)
 
@@ -44,7 +44,7 @@ def text_html(text: str) -> str:
     body = md.markdown(text, extensions=["tables", "sane_lists", "fenced_code"], output_format="html")
     body = body.replace(
         "<code>",
-        f'<code style="font-family:{MONO_FONT}; background-color:{p["inline_code"]}; font-size:92%;">&nbsp;',
+        f'<code style="font-family:{mono_css()}; background-color:{p["inline_code"]}; font-size:92%;">&nbsp;',
     ).replace("</code>", "&nbsp;</code>")
     body = body.replace("<table>", f'<table cellspacing="0" cellpadding="6" style="border-collapse:collapse; border:1px solid {p["border"]};">')
     body = body.replace("<th>", f'<th style="border:1px solid {p["border"]}; text-align:left;">').replace(
@@ -64,7 +64,7 @@ def code_html(code: str, lang: str) -> str:
     style = "one-dark" if isDarkTheme() else "default"
     fmt = HtmlFormatter(noclasses=True, nowrap=True, style=style)
     inner = highlight(code, lexer, fmt)
-    return (f'<pre style="font-family:{MONO_FONT}; font-size:9.5pt; margin:0; line-height:135%;">'
+    return (f'<pre style="font-family:{mono_css()}; font-size:{code_pt()}; margin:0; line-height:135%;">'
             f"{inner}</pre>")
 
 

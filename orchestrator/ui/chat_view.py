@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QFont, QKeyEvent
+from PySide6.QtGui import QAction, QActionGroup, QKeyEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -45,7 +45,7 @@ from orchestrator.ui.chat_widgets import (
     WarningLine,
     fade_in,
 )
-from orchestrator.ui.theme import UI_FONT, palette
+from orchestrator.ui.theme import chat_font, palette, space
 from orchestrator.ui_text import usage_text
 
 CONTENT_MAX = 860
@@ -69,9 +69,7 @@ class PromptBox(QFrame):
         self.edit.setFrameShape(QFrame.NoFrame)
         self.edit.setStyleSheet(f"QPlainTextEdit {{ background:transparent; border:none; padding:0; color:{p['text']};"
                                 f" selection-background-color:{p['accent']}; }}")
-        f = QFont(UI_FONT)
-        f.setPointSizeF(10.5)
-        self.edit.setFont(f)
+        self.edit.setFont(chat_font())
         self.edit.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.edit.installEventFilter(self)
         self.edit.textChanged.connect(self._grow)
@@ -269,6 +267,10 @@ class ChatView(QWidget):
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._flush_render)
+        self._restyle_pending = False
+        from orchestrator.ui.appearance import hub
+
+        hub.changed.connect(self.restyle)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -313,7 +315,7 @@ class ChatView(QWidget):
         self.column.setMaximumWidth(CONTENT_MAX)
         self.stream = QVBoxLayout(self.column)
         self.stream.setContentsMargins(0, 0, 0, 0)
-        self.stream.setSpacing(10)
+        self.stream.setSpacing(space(10))
         self.stream.addStretch(1)
         hh.addStretch(1)
         hh.addWidget(self.column, 100)
@@ -369,6 +371,17 @@ class ChatView(QWidget):
             self.addProjectRequested.emit()
         else:
             self.newChatRequested.emit()
+
+    def restyle(self) -> None:
+        """Settings › Appearance changed: rebuild the shown chat with the new fonts/density."""
+        self.prompt.edit.setFont(chat_font())
+        self.stream.setSpacing(space(10))
+        if self.session and self.mgr.is_running(self.session.id):
+            self._restyle_pending = True  # don't disturb a streaming turn; redo when it finishes
+            return
+        self._restyle_pending = False
+        if self.session:
+            self.show_session(self.session.id)
 
     def show_session(self, sid: int | None) -> None:
         self.session = self.db.session(sid) if sid else None
@@ -601,6 +614,8 @@ class ChatView(QWidget):
             self._dots = None
 
     def _on_status(self, sid: int, status: str) -> None:
+        if self._restyle_pending and self.session and sid == self.session.id and status != "running":
+            QTimer.singleShot(0, self.restyle)
         if self.session and sid == self.session.id:
             self.prompt.set_running(status in ("running", "waiting"))
 
