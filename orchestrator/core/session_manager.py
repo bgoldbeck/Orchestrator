@@ -23,6 +23,14 @@ from orchestrator.engines.codex import CodexAdapter
 from orchestrator.storage.db import Database
 
 
+# Unattended runs (schedules, later orchestrator jobs) can't wait for a click.
+POLICIES: dict[str, dict] = {
+    "read-only": {"label": "Read only", "sandbox": "read-only", "claude_mode": "default", "approve": False},
+    "allow-edits": {"label": "Allow edits", "sandbox": "workspace-write", "claude_mode": "acceptEdits", "approve": False},
+    "full": {"label": "Full access", "sandbox": "danger-full-access", "claude_mode": "bypassPermissions", "approve": True},
+}
+
+
 def make_title(prompt: str) -> str:
     t = " ".join(prompt.split())
     return t if len(t) <= 48 else t[:47].rstrip() + "…"
@@ -56,8 +64,16 @@ class SessionManager(QObject):
         t = self._tasks.get(sid)
         return bool(t and not t.done())
 
-    def _adapter(self, sid: int, engine: str) -> AgentAdapter:
+    def _adapter(self, sid: int, engine: str, policy: str | None = None) -> AgentAdapter:
+        pol = POLICIES.get(policy or "")
+
         async def approve(req: NeedsApproval) -> bool:
+            if pol is not None:
+                ok = pol["approve"]
+                self.db.add_message(sid, "system", "error", {
+                    "text": f"{'Allowed' if ok else 'Denied'} {req.tool} automatically ({pol['label'].lower()} schedule)"
+                            + (f": {req.detail}" if req.detail else ""), "fatal": False, "level": "warning"})
+                return ok
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self._set_status(sid, "waiting")
             self.approval_requested.emit(sid, req, fut)
@@ -67,42 +83,46 @@ class SessionManager(QObject):
                 self._set_status(sid, "running")
 
         if engine == "claude":
-            return ClaudeAdapter(approval_handler=approve)
+            mode = pol["claude_mode"] if pol else self.db.get_setting("claude.permission_mode", "default")
+            return ClaudeAdapter(approval_handler=approve, permission_mode=mode)
         return CodexAdapter(approval_handler=approve, env=auth.codex_status().env)
 
     def _set_status(self, sid: int, status: str) -> None:
         self.db.update_session(sid, status=status)
         self.status_changed.emit(sid, status)
 
-    def send(self, sid: int, text: str) -> None:
+    def send(self, sid: int, text: str, policy: str | None = None) -> bool:
+        """Start a turn. `policy` (see POLICIES) marks an unattended run. Returns False if not started."""
         if self.is_running(sid):
-            return
+            return False
         s = self.db.session(sid)
         if not s:
-            return
+            return False
         if s.source == "app" and not self.db.messages(sid):
             self.db.update_session(sid, title=make_title(text))
             self.session_updated.emit(sid)
         self.db.add_message(sid, "user", "text", {"text": text})
-        self._tasks[sid] = asyncio.ensure_future(self._run(sid, text))
+        self._tasks[sid] = asyncio.ensure_future(self._run(sid, text, policy))
+        return True
 
     async def stop(self, sid: int) -> None:
         a = self._adapters.get(sid)
         if a:
             await a.interrupt()
 
-    async def _run(self, sid: int, prompt: str) -> None:
+    async def _run(self, sid: int, prompt: str, policy: str | None = None) -> None:
         s = self.db.session(sid)
         proj = self.db.project(s.project_id) if s else None
         if not s or not proj:
             return
-        adapter = self._adapter(sid, s.engine)
+        adapter = self._adapter(sid, s.engine, policy)
         self._adapters[sid] = adapter
         self._set_status(sid, "running")
         cwd = Path(s.cwd) if s.cwd and Path(s.cwd).is_dir() else Path(proj.path)
         req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
                           resume_id=s.engine_session_id,
-                          sandbox=self.db.get_setting("codex.sandbox", "workspace-write"))
+                          sandbox=POLICIES[policy]["sandbox"] if policy in POLICIES
+                          else self.db.get_setting("codex.sandbox", "workspace-write"))
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"
