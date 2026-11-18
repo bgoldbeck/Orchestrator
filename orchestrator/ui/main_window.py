@@ -82,6 +82,12 @@ class MainWindow(FluentWindow):
             self.tray.quitRequested.connect(self.quit_app)
             QApplication.instance().setQuitOnLastWindowClosed(False)
             runner.run_started.connect(lambda *_: self.chats.sidebar.reload())
+        self.settings.models.changed.connect(self._models_changed)
+
+    def _models_changed(self) -> None:
+        self.chats.chat.refresh_models()
+        if self.schedules is not None:
+            self.schedules.reload()
 
     def _refresh_projects_if_visible(self) -> None:
         if self.stackedWidget.currentWidget() is self.projects:

@@ -12,6 +12,8 @@ from qfluentwidgets import (
     CheckableMenu,
     FluentIcon as FIF,
     IconWidget,
+    InfoBar,
+    InfoBarPosition,
     MenuIndicatorType,
     PlainTextEdit,
     PrimaryPushButton,
@@ -24,6 +26,7 @@ from qfluentwidgets import (
     TransparentDropDownPushButton,
 )
 
+from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.indexer import load_history
 from orchestrator.core.events import Done, Error, NeedsApproval, Text, ToolCall, ToolResult, Usage
@@ -152,21 +155,27 @@ class ModelPill(TransparentDropDownPushButton):
 
     def set_value(self, engine: str, model: str, effort: str, locked: bool) -> None:
         self.engine, self.model, self.effort, self.engine_locked = engine, model, effort, locked
-        label = next((m.label for m in self.db.models(engine) if m.id == model), model or "default")
-        self.setText(f"{ENGINES.get(engine, engine)}  ·  {label}  ·  {effort or 'default'}")
+        label = model_registry.label(self.db, engine, model)
+        ok = model_registry.is_allowed(self.db, engine, model)
+        self.setText(f"{ENGINES.get(engine, engine)}  ·  {label}{'' if ok else ' (disabled)'}  ·  {effort or 'default'}")
 
     def _open(self) -> None:
+        menu = self.build_menu()
+        menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
+
+    def build_menu(self) -> CheckableMenu:
         menu = CheckableMenu(parent=self, indicatorType=MenuIndicatorType.RADIO)
         eg, mg, fg = QActionGroup(menu), QActionGroup(menu), QActionGroup(menu)
         for key, name in ENGINES.items():
-            a = QAction(name, menu, checkable=True)
+            avail = model_registry.engine_available(self.db, key)
+            a = QAction(name if avail else f"{name} (no enabled models)", menu, checkable=True)
             a.setChecked(key == self.engine)
-            a.setEnabled(not self.engine_locked or key == self.engine)
+            a.setEnabled(avail and (not self.engine_locked or key == self.engine))
             a.triggered.connect(lambda _=False, k=key: self._pick_engine(k))
             eg.addAction(a)
             menu.addAction(a)
         menu.addSeparator()
-        models = self.db.models(self.engine)
+        models = model_registry.allowed(self.db, self.engine)
         for m in models:
             a = QAction(m.label, menu, checkable=True)
             a.setChecked(m.id == self.model)
@@ -185,17 +194,18 @@ class ModelPill(TransparentDropDownPushButton):
             fg.addAction(a)
             sub.addAction(a)
         menu.addMenu(sub)
-        menu.exec(self.mapToGlobal(self.rect().bottomLeft()))
+        return menu
 
     def _pick_engine(self, engine: str) -> None:
         if engine == self.engine:
             return
-        model, effort = self.db.default_model(engine)
-        self.changed.emit(engine, model, effort)
+        d = model_registry.default(self.db, engine)
+        if d:
+            self.changed.emit(engine, *d)
 
     def _pick(self, model: str | None = None, effort: str | None = None) -> None:
         model = model or self.model
-        efforts = next((m.efforts for m in self.db.models(self.engine) if m.id == model), [])
+        efforts = next((m.efforts for m in model_registry.allowed(self.db, self.engine) if m.id == model), [])
         effort = effort or (self.effort if self.effort in efforts else (efforts[min(1, len(efforts) - 1)] if efforts else ""))
         self.changed.emit(self.engine, model, effort)
 
@@ -315,6 +325,17 @@ class ChatView(QWidget):
         pl.addWidget(self.prompt, 100)
         pl.addStretch(1)
         self.prompt.submitted.connect(self._send)
+        self.model_warn = CaptionLabel("", pw)
+        self.model_warn.setObjectName("modelWarning")
+        self.model_warn.setWordWrap(True)
+        self.model_warn.setStyleSheet("color:#f59e0b; padding-left:6px;")
+        self.model_warn.hide()
+        pl.removeWidget(self.prompt)
+        pcol = QVBoxLayout()
+        pcol.setSpacing(4)
+        pcol.addWidget(self.model_warn)
+        pcol.addWidget(self.prompt)
+        pl.insertLayout(1, pcol, 100)
         self.prompt.stopRequested.connect(self._stop)
         self.prompt.runLaterRequested.connect(self._run_later)
         root.addWidget(pw)
@@ -356,6 +377,7 @@ class ChatView(QWidget):
         where = s.cwd or (proj.path if proj else "")
         self.path.setText(where + ("   ·   imported from engine history" if s.source == "imported" else ""))
         self.pill.set_value(s.engine, s.model or "", s.effort or "", locked=bool(s.engine_session_id))
+        self._update_model_warning()
         msgs = self._history(s)
         if not msgs and not self.mgr.is_running(s.id):
             self.scroll.hide()
@@ -450,8 +472,29 @@ class ChatView(QWidget):
         return NoticeCard(text, "error")
 
     # ---- actions
+    def _update_model_warning(self) -> None:
+        s = self.session
+        bad = bool(s) and not model_registry.is_allowed(self.db, s.engine, s.model or "")
+        if bad:
+            self.model_warn.setText("⚠  " + model_registry.disabled_message(self.db, s.engine, s.model or ""))
+        self.model_warn.setVisible(bad)
+
+    def refresh_models(self) -> None:
+        """Settings › Models changed: relabel the pill and re-check the current chat."""
+        s = self.session = self.db.session(self.session.id) if self.session else None
+        if s:
+            self.pill.set_value(s.engine, s.model or "", s.effort or "", locked=bool(s.engine_session_id))
+        self._update_model_warning()
+
     def _send(self, text: str) -> None:
         if not self.session:
+            return
+        s = self.db.session(self.session.id)
+        if s and not model_registry.is_allowed(self.db, s.engine, s.model or ""):
+            self._update_model_warning()
+            self.prompt.edit.setPlainText(text)
+            InfoBar.warning("Model disabled", model_registry.disabled_message(self.db, s.engine, s.model or ""),
+                            parent=self.window(), position=InfoBarPosition.TOP_RIGHT, duration=4000)
             return
         self.empty.hide()
         self.scroll.show()
