@@ -39,6 +39,8 @@ python -m venv .venv
 .venv\Scripts\python run.py
 ```
 
+Or double-click `Orchestrator.cmd` (no console window).
+
 Engines must be installed and signed in:
 
 - Codex: `npm i -g @openai/codex`, then `codex login`.
