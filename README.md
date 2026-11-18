@@ -351,6 +351,19 @@ How changes show up:
 
 ![App commands in a chat](docs/screenshots/app-commands.png)
 
+## Quitting
+
+Closing the window keeps Orchestrator in the tray so schedules keep running. To end it, use tray › **Quit**, or
+run `Orchestrator.cmd --quit`.
+
+What Quit does:
+
+- If agents are working, it asks first: "N tasks are still running. Stop them and quit?"
+- It stops the scheduler and running turns, ends every process the app started (claude / codex and their MCP
+  servers), closes its servers, and exits.
+- If anything still holds the process 5 seconds later, the app writes the thread stacks to
+  `<data>/logs/quit-hang.txt` and exits anyway.
+
 ## Run
 
 ```
