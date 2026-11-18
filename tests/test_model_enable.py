@@ -175,7 +175,7 @@ def test_run_once_starts_on_allowed_model_and_refuses_disabled(qapp, db, tmp_pat
     assert reg.is_allowed(db, view.pill.engine, view.pill.model, strict=True)
     view.pill.set_value("codex", "gpt-6.2-sol", "low", locked=False)
     view.prompt.setPlainText("x")
-    view.group.button(0).setChecked(True)
+    view.picker.select("In 1 hour")
     view._schedule()
     assert db.schedules() == [] and "disabled" in view.summary.text()
 

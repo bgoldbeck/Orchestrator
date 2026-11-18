@@ -1,7 +1,7 @@
 """Pick a moment for 'run later': quick chips, or a date plus a time from a 15-minute list, read back in words."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QVBoxLayout, QWidget
@@ -46,6 +46,7 @@ class WhenPicker(QWidget):
             self.flow.addWidget(b)
             self.buttons[label] = b
         self.group.idClicked.connect(self._chip)
+        self._last_chip = 0
         lay.addWidget(chips)
 
         self.customRow = QWidget(self)
@@ -92,8 +93,10 @@ class WhenPicker(QWidget):
     def _chip(self, i: int) -> None:
         custom = i >= len(self.chips)
         self.customRow.setVisible(custom)
-        if custom:  # start from the last chip's time, rounded to the list
-            dt = self.chips[0][1] if self.chips else datetime.now()
+        if not custom:
+            self._last_chip = i
+        else:  # start from the chip picked before (In 5 hours by default), rounded up to the list
+            dt = dict(when_chips()).get(self.chips[self._last_chip][0]) if self.chips else datetime.now()
             self.date.setDate(QDate(dt.year, dt.month, dt.day))
             nxt = (dt.hour * 60 + dt.minute + 14) // 15
             self.time.setCurrentIndex(min(len(self.slots) - 1, nxt))
