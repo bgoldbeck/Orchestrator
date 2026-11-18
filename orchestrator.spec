@@ -15,7 +15,10 @@ datas += collect_data_files("mcp")
 hiddenimports += collect_submodules("orchestrator")
 # qfluentwidgets' media-player widgets are never used: leave them (and QtMultimedia) out
 hiddenimports = [h for h in hiddenimports if not h.startswith("qfluentwidgets.multimedia")]
-hiddenimports += ["keyring.backends.Windows", "sqlalchemy.dialects.sqlite", "win32ctypes.core"]
+hiddenimports += ["keyring.backends.Windows", "sqlalchemy.dialects.sqlite", "win32ctypes.core",
+                  "win32com.propsys", "win32com.propsys.pscon", "win32com.shell", "win32com.shell.shellcon",
+                  "pythoncom", "pywintypes"]
+datas += [("orchestrator/assets/icons", "orchestrator/assets/icons")]  # app icon PNGs + .ico
 
 a = Analysis(
     ["run.py"],

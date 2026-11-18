@@ -5,23 +5,15 @@ import asyncio
 import sys
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 
 def _app_icon() -> QIcon:
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#4cc2ff"))
-    p.drawRoundedRect(4, 4, 56, 56, 14, 14)
-    p.setBrush(QColor("#0b1220"))
-    for x, y in ((20, 20), (44, 20), (32, 44)):
-        p.drawEllipse(x - 7, y - 7, 14, 14)
-    p.end()
-    return QIcon(pm)
+    """The app icon at every size (rendered from assets/icon.svg by scripts/make_icon.py)."""
+    from orchestrator.ui.app_icon import app_icon
+
+    return app_icon()
 
 
 class _FirstPaint(QObject):
@@ -75,6 +67,9 @@ def main() -> int:
     from orchestrator.lazy_imports import defer_qfw_image_utils
 
     auth.scrub_inherited_host_env()
+    from orchestrator.ui.app_icon import set_app_user_model_id
+
+    set_app_user_model_id()  # before any window: taskbar shows our icon, not pythonw's
     defer_qfw_image_utils()  # skip numpy/scipy/PIL until something actually blurs an image
 
     import qasync
@@ -90,6 +85,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Orchestrator")
     app.setOrganizationName("Orchestrator")
+    icon = _app_icon()
+    app.setWindowIcon(icon)  # every window and dialog, plus the taskbar button
     db = Database()
     from orchestrator.ui import appearance
 
@@ -104,7 +101,7 @@ def main() -> int:
     mgr = SessionManager(db)
     # Shell first: Projects home from the local database; other pages, the session scan, schedules,
     # tray and shortcuts are set up right after the first paint (MainWindow.finish_startup).
-    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db), runner=ScheduleRunner(db, mgr), lazy=True)
+    win = MainWindow(db, mgr, icon, indexer=SessionIndexer(db), runner=ScheduleRunner(db, mgr), lazy=True)
     startup.mark("window_created")
     if startup.bench_quit():
         startup.on_ready = lambda: QTimer.singleShot(300, win.quit_app)
