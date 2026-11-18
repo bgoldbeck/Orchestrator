@@ -68,6 +68,7 @@ class Tray(QObject):
         mgr.status_changed.connect(self._on_status)
         mgr.approval_requested.connect(self._on_approval)
         runner.run_finished.connect(self._on_run_finished)
+        runner.run_blocked.connect(self._on_run_blocked)
         runner.changed.connect(self._sync_pause)
         self.update_badge()
 
@@ -121,6 +122,10 @@ class Tray(QObject):
         text = {"done": "finished", "error": "failed", "stopped": "was stopped"}.get(status, status)
         self.notify(f"{name} {text}", "Click to open the chat.", sid, "error" if status == "error" else "info")
         self.update_badge()
+
+    def _on_run_blocked(self, sched_id: int, why: str) -> None:
+        s = self.db.schedule(sched_id)
+        self.notify(f"{s.name if s else 'Schedule'} skipped", why, None, "warning")
 
     def _activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):

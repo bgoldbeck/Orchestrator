@@ -18,6 +18,7 @@ from qfluentwidgets import (
     TimePicker,
 )
 
+from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.scheduler import CRON_PRESETS, describe, fmt_when, next_fire
 from orchestrator.core.session_manager import POLICIES
@@ -70,7 +71,7 @@ class ScheduleDialog(MessageBoxBase):
         eng = QHBoxLayout()
         self.engine = ComboBox(self)
         for k, v in ENGINES.items():
-            self.engine.addItem(v, userData=k)
+            self.engine.addItem(v if model_registry.engine_available(db, k) else f"{v} (no enabled models)", userData=k)
         self.model = ComboBox(self)
         self.effort = ComboBox(self)
         self.engine.currentIndexChanged.connect(self._fill_models)
@@ -172,16 +173,21 @@ class ScheduleDialog(MessageBoxBase):
     def _fill_models(self) -> None:
         engine = self.engine.currentData()
         self.model.clear()
-        for m in self.db.models(engine):
+        for m in model_registry.allowed(self.db, engine):
             self.model.addItem(m.label, userData=m.id)
-        dm, _ = self.db.default_model(engine)
-        idx = self.model.findData(dm)
+        s = self.sched
+        if s and s.engine == engine and s.model and self.model.findData(s.model) < 0:
+            # Keep showing the saved (now disabled) model so it is never swapped silently.
+            self.model.addItem(f"{model_registry.label(self.db, engine, s.model)} (disabled)", userData=s.model)
+        d = model_registry.default(self.db, engine)
+        idx = self.model.findData(d[0]) if d else -1
         self.model.setCurrentIndex(max(0, idx))
         self._fill_efforts()
 
     def _fill_efforts(self) -> None:
         mid = self.model.currentData()
         efforts = next((m.efforts for m in self.db.models(self.engine.currentData()) if m.id == mid), ["low", "medium", "high"])
+        efforts = efforts or ["low", "medium", "high"]
         cur = self.effort.currentText()
         self.effort.clear()
         self.effort.addItems(efforts)
@@ -224,7 +230,7 @@ class ScheduleDialog(MessageBoxBase):
     def _load(self) -> None:
         s = self.sched
         last = self.db.get_setting("last") or ["codex", *self.db.default_model("codex")]
-        engine = s.engine if s else last[0]
+        engine = s.engine if s else (model_registry.pick(self.db, *last) or last)[0]
         self.engine.setCurrentIndex(max(0, self.engine.findData(engine)))
         self._fill_models()
         if s:
@@ -284,6 +290,8 @@ class ScheduleDialog(MessageBoxBase):
             problem = "Write the prompt to run."
         elif data["new_or_resume"] == "resume" and not data["session_id"]:
             problem = "Pick the chat to continue."
+        elif not model_registry.is_allowed(self.db, data["engine"], data["model"] or "", strict=True):
+            problem = model_registry.disabled_message(self.db, data["engine"], data["model"] or "")
         else:
             try:
                 nxt = next_fire(kind, data["cron"], data["run_at"])

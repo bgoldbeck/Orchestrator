@@ -21,6 +21,7 @@ from qfluentwidgets import (
     CaptionLabel,
     ComboBox,
     FluentIcon as FIF,
+    HyperlinkButton,
     InfoBar,
     InfoBarPosition,
     PasswordLineEdit,
@@ -164,29 +165,53 @@ class AccountCard(QFrame):
 
 
 class ModelsCard(QFrame):
+    changed = Signal()  # enabled set or list changed: pickers refresh
+
     def __init__(self, db: Database, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.db = db
+        self._loading = False
         f, lay = card(self)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(f)
         hint = CaptionLabel("Editable list. Add new models here, no code change needed. "
-                            "Efforts are comma separated.", f)
+                            "Efforts are comma separated. Unchecked models are hidden everywhere and never used.", f)
         hint.setStyleSheet(f"color:{palette()['muted']};")
         lay.addWidget(hint)
         self.table = TableWidget(f)
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Engine", "Model ID", "Label", "Efforts"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Enabled", "Engine", "Model ID", "Label", "Efforts"])
         self.table.verticalHeader().hide()
         self.table.setBorderVisible(True)
         self.table.setBorderRadius(8)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.setMinimumHeight(320)
+        hh.setSectionResizeMode(4, QHeaderView.Stretch)
+        self.table.setMinimumHeight(400)
+        self.table.itemChanged.connect(self._on_item)
+        bulk = QHBoxLayout()
+        bulk.setSpacing(4)
+        self.bulk: dict[str, tuple] = {}
+        for engine, name in ENGINES.items():
+            lab = CaptionLabel(name, f)
+            on = HyperlinkButton("", "Enable all", f)
+            off = HyperlinkButton("", "Disable all", f)
+            on.clicked.connect(lambda _=False, e=engine: self._set_all(e, True))
+            off.clicked.connect(lambda _=False, e=engine: self._set_all(e, False))
+            bulk.addWidget(lab)
+            bulk.addWidget(on)
+            bulk.addWidget(off)
+            bulk.addSpacing(18)
+            self.bulk[engine] = (on, off)
+        bulk.addStretch(1)
+        self.warn = CaptionLabel("", f)
+        self.warn.setStyleSheet("color:#f59e0b;")
+        lay.addLayout(bulk)
+        lay.addWidget(self.warn)
         lay.addWidget(self.table)
         row = QHBoxLayout()
         add_c = PushButton(FIF.ADD, "Add Claude model", f)
@@ -207,24 +232,66 @@ class ModelsCard(QFrame):
         self.load()
 
     def load(self) -> None:
+        self._loading = True
         ms = self.db.models()
         self.table.setRowCount(len(ms))
         for r, m in enumerate(ms):
-            self._set_row(r, m.engine, m.id, m.label, ", ".join(m.efforts))
+            self._set_row(r, m.engine, m.id, m.label, ", ".join(m.efforts), m.enabled)
+        self._loading = False
+        self._update_warning()
 
-    def _set_row(self, r: int, engine: str, mid: str, label: str, efforts: str) -> None:
+    def _set_row(self, r: int, engine: str, mid: str, label: str, efforts: str, enabled: bool = True) -> None:
+        was = self._loading
+        self._loading = True
+        chk = QTableWidgetItem("")
+        chk.setFlags((chk.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
+        chk.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
+        self.table.setItem(r, 0, chk)
         e = QTableWidgetItem(engine)
         e.setFlags(e.flags() & ~Qt.ItemIsEditable)
-        self.table.setItem(r, 0, e)
-        self.table.setItem(r, 1, QTableWidgetItem(mid))
-        self.table.setItem(r, 2, QTableWidgetItem(label))
-        self.table.setItem(r, 3, QTableWidgetItem(efforts))
+        self.table.setItem(r, 1, e)
+        self.table.setItem(r, 2, QTableWidgetItem(mid))
+        self.table.setItem(r, 3, QTableWidgetItem(label))
+        self.table.setItem(r, 4, QTableWidgetItem(efforts))
+        self._loading = was
+
+    def _row_enabled(self, r: int) -> bool:
+        it = self.table.item(r, 0)
+        return bool(it and it.checkState() == Qt.Checked)
+
+    def _on_item(self, item: QTableWidgetItem) -> None:
+        if self._loading or item.column() != 0:
+            return
+        r = item.row()
+        engine = self.table.item(r, 1).text() if self.table.item(r, 1) else ""
+        mid = self.table.item(r, 2).text().strip() if self.table.item(r, 2) else ""
+        if mid and any(m.id == mid for m in self.db.models(engine)):  # saved row: takes effect right away
+            self.db.set_model_enabled(engine, mid, self._row_enabled(r))
+            self.changed.emit()
+        self._update_warning()
+
+    def _set_all(self, engine: str, enabled: bool) -> None:
+        self.db.set_model_enabled(engine, None, enabled)
+        self._loading = True
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 1) and self.table.item(r, 1).text() == engine:
+                self.table.item(r, 0).setCheckState(Qt.Checked if enabled else Qt.Unchecked)
+        self._loading = False
+        self._update_warning()
+        self.changed.emit()
+
+    def _update_warning(self) -> None:
+        off = [name for engine, name in ENGINES.items()
+               if not any(self.table.item(r, 1) and self.table.item(r, 1).text() == engine and self._row_enabled(r)
+                          for r in range(self.table.rowCount()))]
+        self.warn.setText(" ".join(f"{n} has no enabled models, so {n} can't be used." for n in off))
+        self.warn.setVisible(bool(off))
 
     def _add(self, engine: str) -> None:
         r = self.table.rowCount()
         self.table.insertRow(r)
         self._set_row(r, engine, "new-model-id", "New model", "low, medium, high")
-        self.table.editItem(self.table.item(r, 1))
+        self.table.editItem(self.table.item(r, 2))
 
     def _remove(self) -> None:
         for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
@@ -233,16 +300,19 @@ class ModelsCard(QFrame):
     def _reset(self) -> None:
         self.db.reset_models()
         self.load()
+        self.changed.emit()
 
     def _save(self) -> None:
         out: list[Model] = []
         for r in range(self.table.rowCount()):
             get = lambda c: (self.table.item(r, c).text().strip() if self.table.item(r, c) else "")  # noqa: E731
-            if not get(1):
+            if not get(2):
                 continue
-            efforts = [x.strip() for x in get(3).split(",") if x.strip()]
-            out.append(Model(get(0), get(1), get(2) or get(1), efforts))
+            efforts = [x.strip() for x in get(4).split(",") if x.strip()]
+            out.append(Model(get(1), get(2), get(3) or get(2), efforts, self._row_enabled(r)))
         self.db.save_models(out)
+        self._update_warning()
+        self.changed.emit()
         InfoBar.success("Models saved", f"{len(out)} models", parent=self.window(),
                         position=InfoBarPosition.TOP_RIGHT, duration=2000)
 
@@ -270,7 +340,8 @@ class SettingsPage(SmoothScrollArea):
 
         lay.addSpacing(6)
         lay.addWidget(SubtitleLabel("Models", body))
-        lay.addWidget(ModelsCard(db, body))
+        self.models = ModelsCard(db, body)
+        lay.addWidget(self.models)
 
         lay.addSpacing(6)
         lay.addWidget(SubtitleLabel("Engines", body))

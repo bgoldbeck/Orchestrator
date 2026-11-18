@@ -11,6 +11,8 @@ from qfluentwidgets import (
     Action,
     CaptionLabel,
     FluentIcon as FIF,
+    InfoBar,
+    InfoBarPosition,
     MessageBox,
     PrimaryPushButton,
     RoundMenu,
@@ -21,6 +23,7 @@ from qfluentwidgets import (
     TreeWidget,
 )
 
+from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database
@@ -290,13 +293,13 @@ class Sidebar(QFrame):
         if pid is None:
             self.add_project()
             return
-        last = self.db.get_setting("last")
-        if last:
-            engine, model, effort = last
-        else:
-            engine = "codex"
-            model, effort = self.db.default_model(engine)
-        s = self.db.create_session(pid, engine, model, effort)
+        last = self.db.get_setting("last") or ["codex", *self.db.default_model("codex")]
+        choice = model_registry.pick(self.db, *last)
+        if choice is None:
+            InfoBar.warning("No models enabled", "Turn on at least one model in Settings › Models.",
+                            parent=self.window(), position=InfoBarPosition.TOP_RIGHT, duration=4000)
+            return
+        s = self.db.create_session(pid, *choice)
         self.select(s.id)
 
     def select(self, sid: int | None) -> None:
