@@ -141,6 +141,26 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   (`Orchestrator.exe --mcp-server`), so the built app needs no Python. Codex still comes from your own
   `codex` install on PATH.
 
+## Orchestrate: clearer setup, queue and project auto-pick
+
+![Queue](docs/screenshots/orch-queue.png)
+
+- **New orchestration** (was "New run"), with a one-line explanation of what an orchestration is. With no projects
+  yet, the page explains that a project is a folder and has an **Add project folder** button right there.
+- **Run up to N tasks at once** is a readable number field. Extra tasks show **Queued (#2)** on the board, in the
+  order they will start; queued tasks can be moved earlier/later or cancelled.
+- **Global limit** (Settings › Orchestrator › Agents running at once): orchestration tasks from every orchestration
+  and scheduled chat runs share it; whatever does not fit waits and starts when a slot frees up.
+- **Auto (pick from goal)** is the default project. The goal is matched against project names, folder paths and
+  recent chat summaries; the composer shows "Working in: X — because …" with **Change**. When it is unclear the
+  app asks (top 3 projects + Browse folder…) instead of guessing; with a single project it just uses it. The
+  planner can call **find_projects** and delegate a task to another project (`project` argument).
+- **Run now / Later ▾ (Run once later… / Repeat…)**: scheduled orchestrations are stored as schedules (listed on
+  the Schedules page) and start through the same planner flow. Time chips: In 1 hour, In 5 hours (default),
+  Tonight 9 PM, Tomorrow 8 AM, or a date and a 15-minute time list; the choice is read back in words.
+
+![Composer](docs/screenshots/orch-composer.png)
+
 ## Chat view
 
 ![Chat](docs/screenshots/chat-polish.png)

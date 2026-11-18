@@ -69,8 +69,18 @@ def build_server():
         return _dump(await bridge_call("find_sessions", {"query": query, "project": project}, timeout=30))
 
     @server.tool()
+    async def find_projects(query: str) -> str:
+        """Find the user's project folders that match a description (by name, folder path and recent chats).
+
+        Returns ranked projects with name, path, score and why they matched, plus "confident" when the top one
+        is a clear match. A task can run in any of these: pass the name as `project` to delegate.
+        """
+        return _dump(await bridge_call("find_projects", {"query": query}, timeout=30))
+
+    @server.tool()
     async def delegate(instructions: str, engine: str = "", model: str = "", effort: str = "",
-                       title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "") -> str:
+                       title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "",
+                       project: str = "") -> str:
         """Start a sub-agent on a task. Returns a task_id right away; the task runs in the background.
 
         instructions: everything the sub-agent needs; it does not see this conversation.
@@ -81,10 +91,13 @@ def build_server():
         resume_session_id: a session_ref from find_sessions (like "s:12") or an engine session id, to continue
           that chat instead of starting fresh. The user sees a reuse card and may start fresh or pick another.
         reason: one line on why this engine/model/effort (shown on the task card).
+        project: optional project name (see find_projects) when this task belongs in another project folder;
+          empty = this orchestration's project. `cwd` is then relative to that project.
         """
         return _dump(await bridge_call("delegate", {
             "instructions": instructions, "engine": engine, "model": model, "effort": effort,
-            "title": title, "cwd": cwd, "resume_session_id": resume_session_id, "reason": reason}, timeout=60))
+            "title": title, "cwd": cwd, "resume_session_id": resume_session_id, "reason": reason,
+            "project": project}, timeout=60))
 
     @server.tool()
     async def ask_user(question: str, options: list[str] | None = None, question_id: int = 0) -> str:

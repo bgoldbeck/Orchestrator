@@ -201,6 +201,8 @@ class MainWindow(FluentWindow):
 
             self.om = OrchestrationManager(self.db, self.mgr, self)
             self.om.changed.connect(lambda _o: self.chats.built and self.chats.sidebar.reload_soon())
+            if self.runner is not None:  # scheduled orchestrations start through the same manager
+                self.runner.start_orchestration = self.om.start
         return self.om
 
     def _reload_sidebar(self) -> None:
@@ -221,6 +223,9 @@ class MainWindow(FluentWindow):
 
     def _orchestrate_built(self, page) -> None:
         page.openChat.connect(self.open_session)
+        page.runner = self.runner
+        page.projectsChanged.connect(self._reload_sidebar)
+        page.projectsChanged.connect(self._refresh_projects_if_visible)
 
     def _make_schedules(self, parent):
         from orchestrator.ui.schedules_page import SchedulesPage
