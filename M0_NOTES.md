@@ -18,7 +18,7 @@ Goal: prove Claude Code and Codex can be driven from Python with streaming + res
 | Spike | Turn 1 | Resume | Result |
 |---|---|---|---|
 | `spikes/spike_codex.py` | PING | PING, same thread id | **OK** |
-| `spikes/spike_claude.py` | `Not logged in · Please run /login` | — | **BLOCKED on auth** |
+| `spikes/spike_claude.py` | PING (streamed) | PING, same session id | **OK** (2026-11-18, after `CLAUDE_CODE_OAUTH_TOKEN` was set) |
 
 ## Claude Code (claude_agent_sdk)
 
@@ -43,12 +43,31 @@ async for msg in query(prompt="Reply with the word PING and nothing else.", opti
 # resume: same options with resume=<session_id from SystemMessage(init).data["session_id"] or ResultMessage.session_id>
 ```
 
-Expected stream (per SDK types; not yet observed live because of auth):
-`SystemMessage(subtype="init", data.session_id)` → `StreamEvent` (`event.type`: message_start / content_block_start / content_block_delta / content_block_stop / message_delta / message_stop) → `AssistantMessage(content=[TextBlock...])` → `ResultMessage(session_id, subtype, is_error, num_turns, total_cost_usd, duration_ms)`.
+Observed stream (2026-11-18, model `haiku` resolved to `claude-haiku-5-5`):
 
-### What broke
+```
+SystemMessage subtype=init   data.session_id=<uuid>
+SystemMessage subtype=status
+RateLimitEvent                                   (order varies; may come after AssistantMessage)
+StreamEvent x6: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop
+AssistantMessage model=claude-haiku-5-5 content=[TextBlock("PING")]
+ResultMessage subtype=success is_error=False session_id=<same uuid> num_turns=1 total_cost_usd≈0.004 duration_ms≈4800
+```
 
-- Both the installed `claude` CLI and the SDK-bundled CLI return `Not logged in · Please run /login` when run from a shell on this machine.
+- Resume: `ClaudeAgentOptions(resume=<session_id>)` gave the **same** session id back, and the reply was PING.
+- Text deltas: `StreamEvent.event["type"] == "content_block_delta"` with `event["delta"]["type"] == "text_delta"`.
+
+### Verified in the app (M1 UI, `scripts/ui_smoke.py --engine claude --rich`)
+
+- New turn and resume on the same session id. Streaming text, a `Bash` tool card with its result, and usage plus cost per turn.
+- Tool approval: a read-only `ls` ran without asking (Claude Code allows read-only commands by default). Writing a file
+  raised `can_use_tool`. The inline **Allow** card appeared, and the file was created after Allow.
+- Token lookup in the app: keyring first, then the process environment, then `HKCU\Environment` (where `setx` stores it).
+  `ORCHESTRATOR_NO_USER_ENV=1` turns off the registry fallback (used in tests).
+
+### What broke (fixed)
+
+- Before the token was set, both the installed `claude` CLI and the SDK-bundled CLI return `Not logged in · Please run /login` when run from a shell on this machine.
 - `~/.claude/.credentials.json` exists but contains only `mcpOAuth` entries — no `claudeAiOauth` login.
 - The Claude Code I'm running in (desktop app) authenticates through host-injected env (`ANTHROPIC_BASE_URL`, `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH`, etc.), which child processes can't use as a standalone login.
 - **Fix (owner action):** in a normal terminal run `claude` then `/login` (subscription), **or** `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN`, **or** set `ANTHROPIC_API_KEY`. Then rerun `.venv\Scripts\python spikes\spike_claude.py` from a plain terminal (not from inside a Claude session, which leaks `CLAUDECODE` / `CLAUDE_CODE_*` / `ANTHROPIC_BASE_URL` into the child).

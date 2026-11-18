@@ -101,9 +101,9 @@ class ChatRowDelegate(TreeItemDelegate):
         painter.setFont(af)
         aw = painter.fontMetrics().horizontalAdvance(age_txt)
         painter.setPen(QColor(palette()["faint"]))
-        painter.drawText(QRectF(r.right() - aw - 8, r.y(), aw + 4, r.height()), Qt.AlignVCenter | Qt.AlignRight, age_txt)
+        painter.drawText(QRectF(r.right() - aw - 14, r.y(), aw + 4, r.height()), Qt.AlignVCenter | Qt.AlignRight, age_txt)
         painter.setFont(QFont(option.font))
-        title_w = r.right() - aw - 16 - x
+        title_w = r.right() - aw - 22 - x
         title = painter.fontMetrics().elidedText(index.data(ROLE_TITLE) or "", Qt.ElideRight, int(title_w))
         painter.setPen(QColor(palette()["text"]))
         painter.drawText(QRectF(x, r.y(), title_w, r.height()), Qt.AlignVCenter | Qt.AlignLeft, title)
