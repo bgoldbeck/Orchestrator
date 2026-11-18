@@ -25,6 +25,11 @@ def _app_icon() -> QIcon:
 
 
 def main() -> int:
+    if "--mcp-server" in sys.argv:  # the built exe doubles as the orchestrator MCP server (stdio)
+        from orchestrator.mcp_server import main as mcp_main
+
+        mcp_main()
+        return 0
     from orchestrator.core import auth
 
     auth.scrub_inherited_host_env()

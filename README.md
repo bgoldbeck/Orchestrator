@@ -120,6 +120,27 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - `send_to_task(task_id, text)` sends a follow-up to a finished sub-agent in the same chat.
 - Real end-to-end check with both planners: `scripts/e2e_m5.py claude|codex`.
 
+## M6: polish
+
+![Changes](docs/screenshots/m6-diff.png)
+
+- **Diff viewer:** the page button in a chat's header (or **Ctrl+D**) shows what changed in that chat's folder since
+  the last commit: a list of changed and new files with a colored unified diff, plus the counts (files, +lines, −lines).
+  Each sub-agent card on the board has a **Changes** button for its folder (or its worktree).
+- **Usage meter:** the chat header shows the tokens that chat has used in Orchestrator, e.g. "59.4k in · 2.3k out",
+  plus cost when the engine reports it (Claude does). Task cards show per-task usage, and the planner strip shows
+  the run total.
+- **Search across chats:** **Ctrl+K** opens a palette that searches titles, summaries and message text of every chat.
+  Use ↑↓ and Enter to jump to a chat.
+- **Keyboard shortcuts** (**F1** lists them): Ctrl+K search, Ctrl+N new chat, Ctrl+L focus the message box,
+  Ctrl+. stop, Ctrl+D changes, Ctrl+1…4 pages, Ctrl+, settings.
+- **Windows build:** `powershell -ExecutionPolicy Bypass -File scripts\build.ps1` builds
+  `dist\Orchestrator\Orchestrator.exe` (one folder, windowed, includes the Claude Code CLI that ships with the
+  Agent SDK) and `dist\Orchestrator-<version>-win64.zip`. If Inno Setup 6 is installed, it also builds a per-user
+  installer from `installer\orchestrator.iss`. The exe also serves as the orchestrator MCP server
+  (`Orchestrator.exe --mcp-server`), so the built app needs no Python. Codex still comes from your own
+  `codex` install on PATH.
+
 ## Run
 
 ```

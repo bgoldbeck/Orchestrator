@@ -37,7 +37,7 @@ from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database, Orchestration, Task
 from orchestrator.ui.chat_view import ModelPill
 from orchestrator.ui.theme import STATUS_COLORS, engine_badge, palette
-from orchestrator.ui_text import relative
+from orchestrator.ui_text import relative, usage_text
 
 TASK_COLORS = {"proposed": STATUS_COLORS["waiting"], "queued": STATUS_COLORS["idle"], "running": STATUS_COLORS["running"],
                "waiting": STATUS_COLORS["waiting"], "done": STATUS_COLORS["done"],
@@ -170,6 +170,11 @@ class TaskCard(QFrame):
         openb = TransparentPushButton(FIF.CHAT, "Open chat", self)
         openb.clicked.connect(lambda: self.openChat.emit(self.sid) if self.sid else None)
         btns.addWidget(openb)
+        if t.status not in ("proposed", "queued"):
+            diffb = TransparentPushButton(FIF.DOCUMENT, "Changes", self)
+            diffb.setToolTip("Git changes in this task's folder" + (" (its worktree)" if t.worktree else ""))
+            diffb.clicked.connect(lambda: self._diff())
+            btns.addWidget(diffb)
         if t.status in ("proposed", "queued"):
             self.pick = ModelPill(page.db, self)
             self.pick.set_value(t.engine, t.model or "", t.effort or "", locked=bool(t.reused))
@@ -235,6 +240,13 @@ class TaskCard(QFrame):
         else:
             self.page.om.resolve_proposal(self.tid, action)
 
+    def _diff(self) -> None:
+        from orchestrator.ui.diff_view import DiffDialog
+
+        t = self.page.db.task(self.tid)
+        if t:
+            DiffDialog(t.worktree or t.cwd or "", self.window(), f"Changes · {t.title}").exec()
+
     def _change(self, engine: str, model: str, effort: str) -> None:
         try:
             self.page.om.change_pick(self.tid, engine, model, effort)
@@ -250,7 +262,8 @@ class TaskCard(QFrame):
             self.countdown.setText("Waiting for you")
         end = t.finished_at or time.time()
         el = fmt_elapsed(end - t.started_at) if t.started_at else "not started"
-        self.sub.setText(f"{model_line(self.page.db, t.engine, t.model, t.effort)}  ·  {el}")
+        u = usage_text(self.page.db.usage(t.session_id), short=True) if t.session_id else ""
+        self.sub.setText(f"{model_line(self.page.db, t.engine, t.model, t.effort)}  ·  {el}" + (f"  ·  {u}" if u else ""))
         if t.status in ("running", "waiting", "queued") and t.session_id:
             line = self.page.om.last_line(t.session_id) if t.status != "queued" else "Waiting for a free slot"
             self.last.setText(line or "Starting…")
@@ -577,8 +590,12 @@ class OrchestratePage(SmoothScrollArea):
                 w.deleteLater()
         lay.addWidget(status_pill(status, self.plannerStatus))
         end = orch.finished_at or time.time()
+        sids = [orch.session_id] if orch.session_id else []
+        sids += [t.session_id for t in self.db.tasks(orch.id) if t.session_id]
+        u = usage_text(self.db.usage(sids), short=True)
         self.plannerSub.setText(f"Planner · {model_line(self.db, orch.engine, orch.model, orch.effort)}  ·  "
-                                f"started {relative(orch.created_at)}  ·  {fmt_elapsed(end - orch.created_at)}")
+                                f"started {relative(orch.created_at)}  ·  {fmt_elapsed(end - orch.created_at)}"
+                                + (f"  ·  run total {u}" if u else ""))
         self.stopAll.setEnabled(self.om.is_active(orch.id))
         self.plannerLast.setText(self._planner_line(orch))
         self.plannerWhy.setText(orch.pick_reason or "")

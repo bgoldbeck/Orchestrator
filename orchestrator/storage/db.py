@@ -541,7 +541,54 @@ class Database:
         self.conn.execute("UPDATE questions SET answer=?, answered_at=? WHERE id=?", (answer, time.time(), qid))
         self.conn.commit()
 
+    # -- usage
+    def usage(self, session_ids: list[int] | int) -> dict[str, Any]:
+        """Token/cost totals from the usage records of one or more chats."""
+        ids = [session_ids] if isinstance(session_ids, int) else list(session_ids)
+        tot = {"input": 0, "output": 0, "cached": 0, "cost": 0.0, "turns": 0}
+        if not ids:
+            return tot
+        q = f"SELECT content_json FROM messages WHERE kind='usage' AND session_id IN ({','.join('?' * len(ids))})"
+        for (cj,) in self.conn.execute(q, ids):
+            u = json.loads(cj)
+            tot["input"] += int(u.get("input") or 0)
+            tot["output"] += int(u.get("output") or 0)
+            tot["cached"] += int(u.get("cached") or 0)
+            tot["cost"] += float(u.get("cost") or 0)
+            tot["turns"] += 1
+        return tot
+
     # -- search
+    def search_messages(self, query: str, limit: int = 60) -> list[dict[str, Any]]:
+        """Chats whose title, summary or message text contains `query` (case-insensitive)."""
+        q = (query or "").strip().lower()
+        if len(q) < 2:
+            return []
+        like = f"%{q}%"
+        out: dict[int, dict[str, Any]] = {}
+        for r in self.conn.execute(
+                "SELECT id, title, summary FROM sessions WHERE status!='hidden' AND "
+                "(lower(title) LIKE ? OR lower(COALESCE(summary,'')) LIKE ? OR lower(COALESCE(keywords,'')) LIKE ?) "
+                "ORDER BY last_active DESC LIMIT ?", (like, like, like, limit)):
+            text = r["title"] if q in r["title"].lower() else (r["summary"] or r["title"])
+            out[r["id"]] = {"session_id": r["id"], "snippet": text, "where": "title"}
+        for r in self.conn.execute(
+                "SELECT m.session_id AS sid, m.content_json AS cj FROM messages m JOIN sessions s ON s.id=m.session_id "
+                "WHERE s.status!='hidden' AND m.kind='text' AND lower(m.content_json) LIKE ? "
+                "ORDER BY s.last_active DESC, m.id DESC LIMIT ?", (like, limit * 4)):
+            if r["sid"] in out:
+                continue
+            text = json.loads(r["cj"]).get("text", "")
+            i = text.lower().find(q)
+            if i < 0:
+                continue
+            a, b = max(0, i - 50), min(len(text), i + len(q) + 70)
+            snip = ("…" if a else "") + " ".join(text[a:b].split()) + ("…" if b < len(text) else "")
+            out[r["sid"]] = {"session_id": r["sid"], "snippet": snip, "where": "message"}
+            if len(out) >= limit:
+                break
+        return list(out.values())[:limit]
+
     def all_sessions(self, limit: int = 2000) -> list[Session]:
         return [self._sess(r) for r in self.conn.execute(
             "SELECT * FROM sessions WHERE status!='hidden' ORDER BY last_active DESC LIMIT ?", (limit,))]

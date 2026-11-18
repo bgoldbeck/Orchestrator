@@ -1,8 +1,8 @@
 """Top-level Fluent window, plus tray / close-to-tray wiring."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QSystemTrayIcon, QWidget
 from qfluentwidgets import FluentIcon as FIF, FluentWindow, NavigationItemPosition
 
@@ -76,6 +76,7 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setExpandWidth(200)
         self.navigationInterface.setCollapsible(True)
         self.chats.chat.openSettingsRequested.connect(lambda: self.switchTo(self.settings))
+        self._install_shortcuts()
         self.stackedWidget.currentChanged.connect(self._on_page)
         self.indexer = indexer
         if indexer is not None:
@@ -101,6 +102,63 @@ class MainWindow(FluentWindow):
         self.chats.chat.refresh_models()
         if self.schedules is not None:
             self.schedules.reload()
+
+    # ---- keyboard
+    def _install_shortcuts(self) -> None:
+        from orchestrator.ui.search_palette import SearchPalette
+
+        self.searchPalette = SearchPalette(self.db, self)
+        self.searchPalette.openSession.connect(self.open_session)
+        pages = [self.projects, self.chats, self.orchestrate] + ([self.schedules] if self.schedules else [])
+        keys = {
+            "Ctrl+K": self.searchPalette.popup,
+            "Ctrl+N": self._shortcut_new_chat,
+            "Ctrl+L": self._shortcut_focus_prompt,
+            "Ctrl+.": self._shortcut_stop,
+            "Ctrl+D": self._shortcut_diff,
+            "Ctrl+,": lambda: self.switchTo(self.settings),
+            "F1": self.show_shortcuts,
+        }
+        for i, page in enumerate(pages, 1):
+            keys[f"Ctrl+{i}"] = (lambda pg=page: self.switchTo(pg))
+        self.shortcuts = []
+        for seq, fn in keys.items():
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.activated.connect(fn)
+            self.shortcuts.append(sc)
+
+    def _shortcut_new_chat(self) -> None:
+        self.switchTo(self.chats)
+        self.chats.sidebar.new_chat()
+
+    def _shortcut_focus_prompt(self) -> None:
+        self.switchTo(self.chats)
+        self.chats.chat.prompt.focus()
+
+    def _shortcut_stop(self) -> None:
+        if self.stackedWidget.currentWidget() is self.chats:
+            self.chats.chat._stop()
+
+    def _shortcut_diff(self) -> None:
+        if self.stackedWidget.currentWidget() is self.chats:
+            self.chats.chat.show_diff()
+
+    def show_shortcuts(self) -> None:
+        from qfluentwidgets import MessageBox
+
+        from orchestrator.ui.search_palette import SHORTCUTS
+
+        text = "\n".join(f"{k}    —    {v}" for k, v in SHORTCUTS)
+        box = MessageBox("Keyboard shortcuts", text, self)
+        box.cancelButton.hide()
+        box.yesButton.setText("Close")
+        box.exec()
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        if getattr(self, "searchPalette", None) is not None and self.searchPalette.isVisible():
+            self.searchPalette.popup()
 
     def _question_toast(self, oid: int, qid: int) -> None:
         q = self.db.question(qid)

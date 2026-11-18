@@ -233,6 +233,13 @@ def mcp_python() -> str:
     return str(w if w.exists() else exe)
 
 
+def mcp_command() -> tuple[str, list[str]]:
+    """How an engine starts the MCP server: the built Orchestrator.exe re-runs itself with --mcp-server."""
+    if getattr(sys, "frozen", False):
+        return sys.executable, ["--mcp-server"]
+    return mcp_python(), ["-m", "orchestrator.mcp_server"]
+
+
 # ---------------------------------------------------------------- manager
 class OrchestrationError(Exception):
     pass
@@ -306,12 +313,12 @@ class OrchestrationManager(QObject):
         if not orch:
             return None
         self.bridge.start()
-        return {"orchestrator": {
-            "command": mcp_python(), "args": ["-m", "orchestrator.mcp_server"],
-            "env": {"ORCH_BRIDGE": self.bridge.address, "ORCH_TOKEN": self.bridge.token,
-                    "ORCH_ORCHESTRATION_ID": str(orch.id), "ORCH_WAIT_LIMIT": str(WAIT_LIMIT),
-                    "PYTHONPATH": str(APP_ROOT)},
-            "tool_timeout_sec": TOOL_TIMEOUT}}
+        command, args = mcp_command()
+        env = {"ORCH_BRIDGE": self.bridge.address, "ORCH_TOKEN": self.bridge.token,
+               "ORCH_ORCHESTRATION_ID": str(orch.id), "ORCH_WAIT_LIMIT": str(WAIT_LIMIT)}
+        if not getattr(sys, "frozen", False):
+            env["PYTHONPATH"] = str(APP_ROOT)
+        return {"orchestrator": {"command": command, "args": args, "env": env, "tool_timeout_sec": TOOL_TIMEOUT}}
 
     def is_active(self, oid: int) -> bool:
         orch = self.db.orchestration(oid)
