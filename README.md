@@ -319,6 +319,38 @@ Details:
   alongside the real app.
 - `ORCHESTRATOR_MULTI_INSTANCE=1` turns the lock off.
 
+## Change settings from chat
+
+Tell any chat (Claude or Codex), or the orchestrator, what you want, for example:
+
+- "prefer design and planning to be opus 5.5 - medium"
+- "coding should be gpt 6.2 sol medium"
+- "increase the font size in this app"
+- "make a run once for x_y_z tomorrow 8am"
+
+Every chat gets an `app` MCP server with these tools:
+
+- `set_model_preference` adds or updates a rule. Model names can be loose, such as "opus 5.5" or "gpt 6.2 sol". If
+  a name is ambiguous or the model is disabled, the tool says so and the model asks you.
+- `list_preferences`.
+- `set_appearance`: sizes in pt or "bigger" / "smaller" / "+1", plus theme, density and accent.
+- `create_schedule`: run once ("in 5 hours", "tomorrow 8am", "friday 9:30am") or repeat ("weekdays 9:30", "every
+  monday 7pm"), as a chat or an orchestration.
+- `list_schedules`, `cancel_schedule`.
+- `list_settings`, `set_setting`. Only an allow-list can be changed: agents at once, summaries, reuse prompt,
+  retries, notifications, tray, and enabling or disabling a model.
+
+How changes show up:
+
+- Every change appears in the chat as **Applied: …** with **Undo**, and the app refreshes right away.
+- Disabling a model or deleting a schedule asks **Allow / Deny** first. The question appears in the chat that asked,
+  or in a dialog if that chat isn't open.
+- Very simple commands typed on their own apply instantly, without a model call, and get the same card and Undo.
+  Examples: "increase the font size", "make the chat font smaller", "dark mode", "use compact".
+- The setting `chat.app_tools = false` turns the tools off.
+
+![App commands in a chat](docs/screenshots/app-commands.png)
+
 ## Run
 
 ```

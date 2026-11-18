@@ -268,6 +268,8 @@ class ChatView(QWidget):
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._flush_render)
         self._restyle_pending = False
+        self.app = None  # AppControl: settings changed from chat (cards with Undo)
+        self._applied_cards: dict[str, list] = {}
         from orchestrator.ui.appearance import hub
 
         hub.changed.connect(self.restyle)
@@ -372,6 +374,72 @@ class ChatView(QWidget):
         else:
             self.newChatRequested.emit()
 
+    # ---- app settings changed from chat
+    def set_app_control(self, ctl) -> None:
+        self.app = ctl
+        ctl.applied.connect(self._on_applied)
+        ctl.undone.connect(self._on_undone)
+
+    def _applied_card(self, summary: str, change_id: str | None, undone: bool = False):
+        from orchestrator.ui.chat_widgets import AppliedCard
+
+        ch = self.app.changes.get(change_id) if (self.app and change_id) else None
+        card = AppliedCard(summary, change_id, self._undo if ch else None, undone or bool(ch and ch.undone))
+        self._applied_cards.setdefault(change_id or "", []).append(card)
+        return card
+
+    def _undo(self, change_id: str) -> None:
+        try:
+            msg = self.app.undo(change_id)
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            InfoBar.warning("Can't undo", str(exc), parent=self.window(), position=InfoBarPosition.TOP_RIGHT,
+                            duration=3000)
+            return
+        InfoBar.success("Undone", msg.removeprefix("Undone: "), parent=self.window(),
+                        position=InfoBarPosition.TOP_RIGHT, duration=2500)
+
+    def _on_applied(self, ch) -> None:
+        if self.session and ch.sid == self.session.id:
+            self._add(self._applied_card(ch.summary, ch.id))
+
+    def _on_undone(self, ch) -> None:
+        for card in self._applied_cards.get(ch.id, []):
+            try:
+                card.set_undone(True)
+            except RuntimeError:  # card was deleted with an earlier render
+                pass
+
+    def show_confirm(self, text: str, fut) -> None:
+        from orchestrator.ui.chat_widgets import ConfirmCard
+
+        self._stick = True
+        self._add(ConfirmCard(text, fut))
+
+    def _try_app_command(self, text: str) -> bool:
+        """Very simple commands ("increase the font size") apply right here, without a model call."""
+        if not self.app or not self.session:
+            return False
+        from orchestrator.core.app_control import AppCommandError, detect
+
+        hit = detect(text)
+        if not hit:
+            return False
+        op, args = hit
+        sid = self.session.id
+        self.empty.hide()
+        self.scroll.show()
+        self._stick = True
+        self.db.add_message(sid, "user", "text", {"text": text})
+        self._add(UserMessage(text))
+        try:
+            res = getattr(self.app, "op_" + op)(sid, **args)
+        except AppCommandError as exc:
+            self._add(self._notice(str(exc), "warning"))
+            return True
+        if isinstance(res, dict) and res.get("note") and not res.get("applied"):
+            self._add(self._notice(res["note"], "warning"))
+        return True
+
     def restyle(self) -> None:
         """Settings › Appearance changed: rebuild the shown chat with the new fonts/density."""
         self.prompt.edit.setFont(chat_font())
@@ -384,6 +452,7 @@ class ChatView(QWidget):
             self.show_session(self.session.id)
 
     def show_session(self, sid: int | None) -> None:
+        self._applied_cards = {}
         self.session = self.db.session(sid) if sid else None
         self._clear()
         s = self.session
@@ -502,6 +571,12 @@ class ChatView(QWidget):
                 self._add(self._notice(m["text"], kind), False)
             elif k == "context":
                 self._add(ContextChip(m.get("tags") or []), False)
+            elif k == "app_change":
+                if m.get("undone"):
+                    continue  # the original card shows "Undone"
+                undone = any(x.get("kind") == "app_change" and x.get("undone")
+                             and x.get("change_id") == m.get("change_id") for x in msgs)
+                self._add(self._applied_card(m.get("summary", ""), m.get("change_id"), undone), False)
             elif k == "usage":
                 self._add(UsageLine(m.get("input", 0), m.get("output", 0), m.get("cached", 0), m.get("cost")), False)
 
@@ -559,6 +634,8 @@ class ChatView(QWidget):
             self.prompt.edit.setPlainText(text)
             InfoBar.warning("Model disabled", model_registry.disabled_message(self.db, s.engine, s.model or ""),
                             parent=self.window(), position=InfoBarPosition.TOP_RIGHT, duration=4000)
+            return
+        if self._try_app_command(text):
             return
         self.empty.hide()
         self.scroll.show()

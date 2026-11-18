@@ -70,6 +70,8 @@ You coordinate sub-agents with the `orchestrator` MCP tools:
 - ask_user(question, options) asks the user and waits for the answer. Use it only when you truly cannot decide.
 - suggest_preference(task_type, keywords, engine, model, effort, notes): when the user says they prefer a model for a
   kind of task ("prefer Opus for complex coding"), call this; the app offers to save it as a rule. It does not wait.
+- The `app` MCP tools change the app's own settings when the user asks you to (model preferences, appearance,
+  schedules, a few safe settings); each change shows the user an Undo button.
 
 How to work:
 1. Look at the project briefly if you need to, call find_sessions, then split the goal into a few clear tasks that
