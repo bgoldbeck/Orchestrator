@@ -141,6 +141,29 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   (`Orchestrator.exe --mcp-server`), so the built app needs no Python. Codex still comes from your own
   `codex` install on PATH.
 
+## Fast startup
+
+The window appears first and fills in after the first paint:
+
+- Projects home renders right away from the local database; Chats, Orchestrate, Schedules and Settings are
+  built one per event-loop turn just after the first paint (or immediately when you open one).
+- The engine-history scan, scheduler, summaries, tray and shortcuts start in that same deferred pass. Until the
+  first scan finishes, Projects home and the sidebar show a subtle "Loading sessions…" (skeleton cards if there is
+  nothing cached yet).
+- Heavy imports stay off the startup path: qfluentwidgets' image blur (numpy/scipy/PIL) loads only if used;
+  APScheduler and the Claude SDK are preloaded on a background thread after the window is up.
+
+Measure with `.venv\Scripts\python scripts\startup_bench.py [--target cmd|exe|both] [--runs 5] [--importtime]`.
+It uses a private copy of your database (schedules off) and reports seconds from launch to the first painted
+window and to fully ready (every page built and sessions refreshed from disk). On the dev machine:
+
+| | first window (before → after) | fully ready (before → after) |
+|---|---|---|
+| `Orchestrator.cmd`, warm | 1.62 → 0.75 s | 1.83 → 1.43 s |
+| `Orchestrator.cmd`, first run (no .pyc) | 3.05 → 0.86 s | 3.57 → 1.54 s |
+| `Orchestrator.exe`, warm | 1.75 → 0.73 s | 2.01 → 1.35 s |
+| `Orchestrator.exe`, first run after build | 2.38 → 1.98 s | 2.69 → 2.60 s |
+
 ## Run
 
 ```

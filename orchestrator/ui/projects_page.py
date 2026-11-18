@@ -24,6 +24,7 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     HyperlinkButton,
     IconWidget,
+    IndeterminateProgressRing,
     LineEdit,
     MenuIndicatorType,
     MessageBox,
@@ -239,6 +240,7 @@ class ProjectsPage(SmoothScrollArea):
         super().__init__(parent)
         self.db = db
         self.show_discovered = False
+        self.loading = False  # engine history not scanned yet: show "Loading sessions…" / skeleton cards
         self.setObjectName("projectsPage")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -293,7 +295,21 @@ class ProjectsPage(SmoothScrollArea):
         head.addSpacing(6)
         head.addWidget(self.newBtn)
         self.lay.addLayout(head)
-        self.lay.addSpacing(14)
+        self.loadingRow = QWidget(self.column)
+        lr = QHBoxLayout(self.loadingRow)
+        lr.setContentsMargins(0, 0, 0, 0)
+        lr.setSpacing(8)
+        ring = IndeterminateProgressRing(self.loadingRow)
+        ring.setFixedSize(14, 14)
+        ring.setStrokeWidth(2)
+        lr.addWidget(ring)
+        lbl = CaptionLabel("Loading sessions…", self.loadingRow)
+        lbl.setStyleSheet(f"color:{palette()['muted']};")
+        lr.addWidget(lbl)
+        lr.addStretch(1)
+        self.loadingRow.setVisible(False)
+        self.lay.addWidget(self.loadingRow)
+        self.lay.addSpacing(10)
 
         self.content = QVBoxLayout()
         self.content.setSpacing(10)
@@ -302,6 +318,29 @@ class ProjectsPage(SmoothScrollArea):
         self.setWidget(body)
         self._cols = 2
         self.reload()
+
+    def set_loading(self, loading: bool) -> None:
+        """While the first engine-history scan runs: a subtle indicator, and skeleton cards if empty."""
+        if loading == self.loading:
+            return
+        self.loading = loading
+        self.loadingRow.setVisible(loading)
+        if not self.db.projects():
+            self.reload()
+
+    def _skeleton(self) -> QWidget:
+        w = QWidget(self.column)
+        grid = QGridLayout(w)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(12)
+        p = palette()
+        for i in range(4):
+            card = QFrame(w)
+            card.setObjectName("skeletonCard")
+            card.setFixedHeight(92)
+            card.setStyleSheet(f"#skeletonCard {{ background:{p['card']}; border:1px solid {p['border']}; border-radius:10px; }}")
+            grid.addWidget(card, i // self._cols, i % self._cols)
+        return w
 
     def _style_new_btn(self) -> None:
         if isDarkTheme():
@@ -386,7 +425,7 @@ class ProjectsPage(SmoothScrollArea):
         mine = [p for p in projects if not p.pinned and not p.auto]
         discovered = [p for p in projects if not p.pinned and p.auto]
         if not projects:
-            self.content.addWidget(self._empty(bool(q)))
+            self.content.addWidget(self._skeleton() if self.loading and not q else self._empty(bool(q)))
             return
         if pinned:
             self.content.addWidget(self._section("Pinned"))

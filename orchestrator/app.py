@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
@@ -24,15 +24,58 @@ def _app_icon() -> QIcon:
     return QIcon(pm)
 
 
+class _FirstPaint(QObject):
+    """Runs ``then`` on the next event-loop turn after the window's first paint."""
+
+    def __init__(self, parent, then) -> None:
+        super().__init__(parent)
+        self._then = then
+
+    def eventFilter(self, obj, e) -> bool:  # noqa: N802
+        if e.type() == QEvent.Paint:
+            obj.removeEventFilter(self)
+            QTimer.singleShot(0, self._then)  # after this paint is on screen
+        return False
+
+
+def _after_first_paint(win, then) -> None:
+    win._first_paint = _FirstPaint(win, then)
+    win.installEventFilter(win._first_paint)
+
+
+def _preload(modules: list[str]) -> None:
+    """Import modules on a background thread so their first real use does not stall the UI."""
+    import importlib
+    import threading
+
+    def run() -> None:
+        for name in modules:
+            try:
+                importlib.import_module(name)
+            except Exception:
+                pass  # the real import reports problems where it matters
+
+    threading.Thread(target=run, name="orch-preload", daemon=True).start()
+
+
+def _tray_available() -> bool:
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    return QSystemTrayIcon.isSystemTrayAvailable()
+
+
 def main() -> int:
     if "--mcp-server" in sys.argv:  # the built exe doubles as the orchestrator MCP server (stdio)
         from orchestrator.mcp_server import main as mcp_main
 
         mcp_main()
         return 0
+    from orchestrator import startup
     from orchestrator.core import auth
+    from orchestrator.lazy_imports import defer_qfw_image_utils
 
     auth.scrub_inherited_host_env()
+    defer_qfw_image_utils()  # skip numpy/scipy/PIL until something actually blurs an image
 
     import qasync
     from qfluentwidgets import Theme, setFontFamilies, setTheme, setThemeColor
@@ -44,6 +87,7 @@ def main() -> int:
     from orchestrator.ui.main_window import MainWindow
     from orchestrator.ui.theme import ACCENTS, UI_FONT, UI_FONTS
 
+    startup.mark("imports")
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName("Orchestrator")
@@ -62,11 +106,26 @@ def main() -> int:
     closing = asyncio.Event()
     app.aboutToQuit.connect(closing.set)
 
+    startup.mark("qapp")
     mgr = SessionManager(db)
-    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db), runner=ScheduleRunner(db, mgr))
-    if "--tray" in sys.argv and win.tray is not None:
-        pass  # started at login: stay in the tray
+    # Shell first: Projects home from the local database; other pages, the session scan, schedules,
+    # tray and shortcuts are set up right after the first paint (MainWindow.finish_startup).
+    win = MainWindow(db, mgr, _app_icon(), indexer=SessionIndexer(db), runner=ScheduleRunner(db, mgr), lazy=True)
+    startup.mark("window_created")
+    if startup.bench_quit():
+        startup.on_ready = lambda: QTimer.singleShot(300, win.quit_app)
+
+    def first_paint() -> None:
+        startup.part_done("first_paint")
+        _preload(["apscheduler.jobstores.sqlalchemy", "apscheduler.schedulers.asyncio"])
+        win.finish_startup()
+        # The Claude SDK is only needed for the first Claude turn; warm it once everything else is up.
+        QTimer.singleShot(1500, lambda: _preload(["claude_agent_sdk"]))
+
+    if "--tray" in sys.argv and _tray_available():
+        QTimer.singleShot(0, first_paint)  # started at login: stay in the tray (window never painted)
     else:
+        _after_first_paint(win, first_paint)
         win.show()
 
     with loop:

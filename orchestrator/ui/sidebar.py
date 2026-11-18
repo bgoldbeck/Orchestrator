@@ -149,6 +149,11 @@ class Sidebar(QFrame):
         add.installEventFilter(ToolTipFilter(add))
         add.clicked.connect(self.add_project)
         head.addWidget(lbl)
+        self.loadingLabel = CaptionLabel("Loading sessions…", self)
+        self.loadingLabel.setStyleSheet(f"color:{p['muted']};")
+        self.loadingLabel.setVisible(False)
+        head.addSpacing(6)
+        head.addWidget(self.loadingLabel)
         head.addStretch(1)
         head.addWidget(add)
         lay.addLayout(head)
@@ -174,6 +179,9 @@ class Sidebar(QFrame):
         manager.status_changed.connect(lambda sid, _s: self._refresh_item(sid))
         manager.session_updated.connect(self._refresh_item)
         self.reload()
+
+    def set_loading(self, loading: bool) -> None:
+        self.loadingLabel.setVisible(loading)
 
     # ---- data
     def reload_soon(self) -> None:

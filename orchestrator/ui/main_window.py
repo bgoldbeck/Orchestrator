@@ -1,20 +1,68 @@
 """Top-level Fluent window, plus tray / close-to-tray wiring."""
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QSystemTrayIcon, QWidget
-from qfluentwidgets import FluentIcon as FIF, FluentWindow, NavigationItemPosition
+import asyncio
 
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QSystemTrayIcon, QVBoxLayout, QWidget
+from qfluentwidgets import CaptionLabel, FluentIcon as FIF, FluentWindow, NavigationItemPosition
+
+from orchestrator import startup
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database
-from orchestrator.ui.chat_view import ChatView
-from orchestrator.ui.settings_page import SettingsPage
-from orchestrator.ui.sidebar import Sidebar
+
+
+class LazyPage(QWidget):
+    """A navigation page whose real widget is built on first use, or when deferred startup reaches it.
+
+    Attribute access the page itself does not have is forwarded to the real widget (building it if
+    needed), so callers can treat ``win.chats.sidebar`` etc. the same either way.
+    """
+
+    def __init__(self, name: str, factory, on_built=None, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._factory = factory
+        self._on_built = on_built
+        self.content: QWidget | None = None
+        self.setObjectName(name)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._placeholder = CaptionLabel("Loading…", self)
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._lay.addWidget(self._placeholder)
+
+    def ensure(self) -> QWidget:
+        if self.content is None and self._factory is not None:
+            factory, self._factory = self._factory, None
+            w = factory(self)
+            self._placeholder.hide()
+            self._placeholder.deleteLater()
+            self._lay.addWidget(w)
+            self.content = w
+            if self._on_built:
+                self._on_built(w)
+        return self.content
+
+    @property
+    def built(self) -> bool:
+        return self.content is not None
+
+    def showEvent(self, e) -> None:  # noqa: N802
+        self.ensure()
+        super().showEvent(e)
+
+    def __getattr__(self, name: str):
+        if name.startswith("_") or name in ("content", "built"):
+            raise AttributeError(name)
+        return getattr(self.ensure(), name)
 
 
 class ChatsPage(QWidget):
     def __init__(self, db: Database, mgr: SessionManager, parent: QWidget | None = None) -> None:
+        from orchestrator.ui.chat_view import ChatView
+        from orchestrator.ui.sidebar import Sidebar
+
         super().__init__(parent)
         self.setObjectName("chatsPage")
         lay = QHBoxLayout(self)
@@ -31,7 +79,9 @@ class ChatsPage(QWidget):
 
 class MainWindow(FluentWindow):
     def __init__(self, db: Database, mgr: SessionManager, icon: QIcon | None = None, indexer=None,
-                 runner=None, orchestrations=None) -> None:
+                 runner=None, orchestrations=None, lazy: bool = False) -> None:
+        """``lazy``: build only the shell and Projects home now, the rest after the first paint
+        (``finish_startup``). Without it the window is complete when the constructor returns."""
         super().__init__()
         self.db = db
         self.mgr = mgr
@@ -44,69 +94,171 @@ class MainWindow(FluentWindow):
         self.setMinimumSize(QSize(800, 600))
         from orchestrator.ui.projects_page import ProjectsPage
 
+        self.runner = runner
+        self.indexer = indexer
+        self.om = orchestrations
+        self.summarizer = None
+        self.tray = None
+        self.searchPalette = None
+        self.shortcuts: list[QShortcut] = []
+        self._startup_started = False
+        self.startup_done = False
+        # Shell: Projects home (real data from the local database) plus placeholder pages.
         self.projects = ProjectsPage(db, self)
-        self.chats = ChatsPage(db, mgr, self)
-        self.settings = SettingsPage(db, self)
+        self.projects.set_loading(indexer is not None)
+        self.chats = LazyPage("chatsPage", lambda p: ChatsPage(db, mgr, p), self._chats_built, self)
+        self.orchestrate = LazyPage("orchestratePage", self._make_orchestrate, self._orchestrate_built, self)
+        self.schedules = (LazyPage("schedulesPage", self._make_schedules, self._schedules_built, self)
+                          if runner is not None else None)
+        self.settings = LazyPage("settingsPage", self._make_settings, self._settings_built, self)
         self.addSubInterface(self.projects, FIF.HOME, "Projects")
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
-        from orchestrator.core.orchestration import OrchestrationManager
-        from orchestrator.ui.orchestrate_page import OrchestratePage
-
-        self.om = orchestrations or OrchestrationManager(db, mgr, self)
-        self.orchestrate = OrchestratePage(db, mgr, self.om, self)
         self.addSubInterface(self.orchestrate, FIF.ROBOT, "Orchestrate")
-        self.orchestrate.openChat.connect(self.open_session)
-        self.om.changed.connect(lambda _o: self.chats.sidebar.reload_soon())
-        from orchestrator.core.summaries import Summarizer
-
-        self.summarizer = Summarizer(db, mgr, self)
-        self.projects.openProject.connect(self.open_project)
-        self.projects.projectsChanged.connect(self.chats.sidebar.reload)
-        self.runner = runner
-        self.schedules = None
-        if runner is not None:
-            from orchestrator.ui.schedules_page import SchedulesPage
-
-            runner.start()
-            self.schedules = SchedulesPage(db, runner, self)
+        if self.schedules is not None:
             self.addSubInterface(self.schedules, FIF.DATE_TIME, "Schedules")
-            self.schedules.openChat.connect(self.open_session)
-            self.chats.chat.runOnceRequested.connect(self._run_once_from_chat)
         self.addSubInterface(self.settings, FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setExpandWidth(200)
         self.navigationInterface.setCollapsible(True)
-        self.chats.chat.openSettingsRequested.connect(lambda: self.switchTo(self.settings))
-        self._install_shortcuts()
+        self.projects.openProject.connect(self.open_project)
+        self.projects.projectsChanged.connect(self._reload_sidebar)
         self.stackedWidget.currentChanged.connect(self._on_page)
-        self.indexer = indexer
         if indexer is not None:
-            indexer.changed.connect(self.chats.sidebar.reload)
+            indexer.changed.connect(self._reload_sidebar)
             indexer.changed.connect(self._refresh_projects_if_visible)
-            indexer.start()
+            indexer.scanned.connect(self._sessions_scanned)
+        if not lazy:
+            self.finish_startup(sync=True)
 
-        self.tray = None
-        if runner is not None and QSystemTrayIcon.isSystemTrayAvailable():
+    # ---- deferred startup (after the first paint)
+    def finish_startup(self, sync: bool = False) -> None:
+        """Build the rest of the window and start background services, one step per event-loop turn
+        so the window stays responsive while it fills in. Safe to call more than once."""
+        if self._startup_started:
+            return
+        self._startup_started = True
+        steps = [self._step_chats, self._step_orchestrate, self._step_settings, self._step_schedules,
+                 self._step_extras]
+        if sync:
+            for step in steps:
+                step(True)
+            self._mark_startup_done()
+            return
+
+        def run(i: int = 0) -> None:
+            if i >= len(steps):
+                self._mark_startup_done()
+                return
+            steps[i](False)
+            QTimer.singleShot(0, lambda: run(i + 1))
+
+        run()
+
+    def _mark_startup_done(self) -> None:
+        self.startup_done = True
+        startup.part_done("deferred")
+
+    def _step_chats(self, sync: bool) -> None:
+        self.chats.ensure()
+        if self.indexer is not None:
+            self.indexer.start()  # scans engine history on a worker thread
+
+    def _step_orchestrate(self, sync: bool) -> None:
+        self._ensure_om()
+        self.orchestrate.ensure()
+        if self.summarizer is None:
+            from orchestrator.core.summaries import Summarizer
+
+            self.summarizer = Summarizer(self.db, self.mgr, self)
+
+    def _step_settings(self, sync: bool) -> None:
+        self.settings.ensure()
+
+    def _step_schedules(self, sync: bool) -> None:
+        if self.schedules is None:
+            return
+        if self.runner.scheduler is None:
+            self.runner.start()
+        self.schedules.ensure()
+
+    def _step_extras(self, sync: bool) -> None:
+        self._install_shortcuts()
+        runner = self.runner
+        if runner is not None and self.tray is None and QSystemTrayIcon.isSystemTrayAvailable():
             from orchestrator.ui.tray import Tray
 
-            self.tray = Tray(db, mgr, runner, self.app_icon, self)
+            self.tray = Tray(self.db, self.mgr, runner, self.app_icon, self)
             self.tray.openRequested.connect(self.bring_to_front)
             self.tray.openSession.connect(self.open_session)
             self.tray.quitRequested.connect(self.quit_app)
             QApplication.instance().setQuitOnLastWindowClosed(False)
-            runner.run_started.connect(lambda *_: self.chats.sidebar.reload())
-            self.om.question_asked.connect(self._question_toast)
-            mgr.approval_requested.connect(self._subagent_approval_toast)
-        self.settings.models.changed.connect(self._models_changed)
+            runner.run_started.connect(lambda *_: self._reload_sidebar())
+            self._ensure_om().question_asked.connect(self._question_toast)
+            self.mgr.approval_requested.connect(self._subagent_approval_toast)
+
+    def _ensure_om(self):
+        if self.om is None:
+            from orchestrator.core.orchestration import OrchestrationManager
+
+            self.om = OrchestrationManager(self.db, self.mgr, self)
+            self.om.changed.connect(lambda _o: self.chats.built and self.chats.sidebar.reload_soon())
+        return self.om
+
+    def _reload_sidebar(self) -> None:
+        if self.chats.built:
+            self.chats.sidebar.reload()
+
+    # page factories / wiring (each runs when its page is first built)
+    def _chats_built(self, page) -> None:
+        page.sidebar.set_loading(self.projects.loading)
+        page.chat.openSettingsRequested.connect(lambda: self.switchTo(self.settings))
+        if self.schedules is not None:
+            page.chat.runOnceRequested.connect(self._run_once_from_chat)
+
+    def _make_orchestrate(self, parent):
+        from orchestrator.ui.orchestrate_page import OrchestratePage
+
+        return OrchestratePage(self.db, self.mgr, self._ensure_om(), parent)
+
+    def _orchestrate_built(self, page) -> None:
+        page.openChat.connect(self.open_session)
+
+    def _make_schedules(self, parent):
+        from orchestrator.ui.schedules_page import SchedulesPage
+
+        if self.runner.scheduler is None:
+            self.runner.start()
+        return SchedulesPage(self.db, self.runner, parent)
+
+    def _schedules_built(self, page) -> None:
+        page.openChat.connect(self.open_session)
+
+    def _make_settings(self, parent):
+        from orchestrator.ui.settings_page import SettingsPage
+
+        return SettingsPage(self.db, parent)
+
+    def _settings_built(self, page) -> None:
+        page.models.changed.connect(self._models_changed)
+
+    def _sessions_scanned(self) -> None:
+        if self.projects.loading:
+            self.projects.set_loading(False)
+            if self.chats.built:
+                self.chats.sidebar.set_loading(False)
+        startup.part_done("sessions")
 
     def _models_changed(self) -> None:
-        self.chats.chat.refresh_models()
-        if self.schedules is not None:
+        if self.chats.built:
+            self.chats.chat.refresh_models()
+        if self.schedules is not None and self.schedules.built:
             self.schedules.reload()
 
     # ---- keyboard
     def _install_shortcuts(self) -> None:
         from orchestrator.ui.search_palette import SearchPalette
 
+        if self.searchPalette is not None:
+            return
         self.searchPalette = SearchPalette(self.db, self)
         self.searchPalette.openSession.connect(self.open_session)
         pages = [self.projects, self.chats, self.orchestrate] + ([self.schedules] if self.schedules else [])
@@ -137,11 +289,11 @@ class MainWindow(FluentWindow):
         self.chats.chat.prompt.focus()
 
     def _shortcut_stop(self) -> None:
-        if self.stackedWidget.currentWidget() is self.chats:
+        if self.stackedWidget.currentWidget() is self.chats and self.chats.built:
             self.chats.chat._stop()
 
     def _shortcut_diff(self) -> None:
-        if self.stackedWidget.currentWidget() is self.chats:
+        if self.stackedWidget.currentWidget() is self.chats and self.chats.built:
             self.chats.chat.show_diff()
 
     def show_shortcuts(self) -> None:
@@ -229,7 +381,8 @@ class MainWindow(FluentWindow):
         self.close()
 
     def _shutdown(self) -> None:
-        self.om.bridge.stop()
+        if self.om is not None:
+            self.om.bridge.stop()
         if self.runner is not None:
             self.runner.shutdown()
         if self.tray is not None:
