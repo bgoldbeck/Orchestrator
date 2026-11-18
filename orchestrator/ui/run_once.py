@@ -3,33 +3,31 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import QDate, QDateTime, QTime, Qt, Signal
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CheckBox,
     ComboBox,
-    FastCalendarPicker,
     Flyout,
     FlyoutAnimationType,
     FlyoutViewBase,
     HyperlinkButton,
     InfoBar,
     InfoBarPosition,
-    PillPushButton,
     PlainTextEdit,
     PrimaryPushButton,
     StrongBodyLabel,
-    TimePicker,
 )
 
 from orchestrator.core import model_registry
-from orchestrator.core.scheduler import ScheduleRunner, fmt_when, quick_times
+from orchestrator.core.scheduler import ScheduleRunner, plain_when
 from orchestrator.core.session_manager import POLICIES
 from orchestrator.storage.db import Database
 from orchestrator.ui.chat_view import ModelPill
 from orchestrator.ui.theme import palette
+from orchestrator.ui.when_picker import WhenPicker
 from orchestrator.ui_text import short_title
 
 
@@ -69,39 +67,9 @@ class RunOnceView(FlyoutViewBase):
         self.prompt.setFixedHeight(84)
         lay.addWidget(self.prompt)
 
-        chips = QHBoxLayout()
-        chips.setSpacing(6)
-        self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
-        self.times = quick_times()
-        for i, (label, _dt) in enumerate(self.times):
-            b = PillPushButton(label, self)
-            b.setCheckable(True)
-            self.group.addButton(b, i)
-            chips.addWidget(b)
-        self.customBtn = PillPushButton("Custom…", self)
-        self.customBtn.setCheckable(True)
-        self.group.addButton(self.customBtn, len(self.times))
-        chips.addWidget(self.customBtn)
-        chips.addStretch(1)
-        lay.addLayout(chips)
-        self.group.buttonToggled.connect(lambda *_: self._update())
-
-        self.customRow = QWidget(self)
-        cr = QHBoxLayout(self.customRow)
-        cr.setContentsMargins(0, 0, 0, 0)
-        self.date = FastCalendarPicker(self.customRow)
-        self.time = TimePicker(self.customRow)
-        d = self.times[1][1] if len(self.times) > 1 else datetime.now()
-        self.date.setDate(QDate(d.year, d.month, d.day))
-        self.time.setTime(QTime(d.hour, d.minute))
-        self.date.dateChanged.connect(lambda _x: self._update())
-        self.time.timeChanged.connect(lambda _x: self._update())
-        cr.addWidget(self.date)
-        cr.addWidget(self.time)
-        cr.addStretch(1)
-        self.customRow.hide()
-        lay.addWidget(self.customRow)
+        self.picker = WhenPicker(self)  # In 1 hour / In 5 hours (default) / Tonight / Tomorrow / Custom
+        self.picker.changed.connect(self._update)
+        lay.addWidget(self.picker)
 
         opts = QHBoxLayout()
         self.cont = CheckBox("Continue this chat", self)
@@ -132,29 +100,22 @@ class RunOnceView(FlyoutViewBase):
         self.repeat.setToolTip("Run on a schedule instead (every weekday, every hour, cron…)")
         self.repeat.clicked.connect(self._repeat)
         self.go = PrimaryPushButton("Schedule", self)
+        self.go.setMinimumWidth(self.go.sizeHint().width())
         self.go.clicked.connect(self._schedule)
         foot.addWidget(self.repeat)
         foot.addStretch(1)
         foot.addWidget(self.go)
         lay.addLayout(foot)
 
-        self.group.button(1 if len(self.times) > 1 else 0).setChecked(True)
         self._update()
 
     def when(self) -> datetime | None:
-        i = self.group.checkedId()
-        if i < 0:
-            return None
-        if i == len(self.times):
-            return QDateTime(self.date.getDate(), self.time.getTime()).toPython()
-        return self.times[i][1]
+        return self.picker.when()
 
     def _update(self) -> None:
-        self.customRow.setVisible(self.customBtn.isChecked())
         w = self.when()
         bad = not w or w <= datetime.now()
-        self.summary.setText("Pick a time in the future" if bad else
-                             f"Runs {fmt_when(w.timestamp())} · then moves to history")
+        self.summary.setText("Pick a time in the future" if bad else "Then it moves to history on the Schedules page.")
         self.go.setEnabled(not bad)
         self.adjustSize()
 
@@ -193,16 +154,33 @@ class RunOnceView(FlyoutViewBase):
         self.repeatRequested.emit(d)
 
 
+def keep_inside(fly, window) -> None:
+    """Shift a flyout left so it does not hang over the window's right edge (buttons near the edge)."""
+    from PySide6.QtCore import QTimer
+
+    def fix() -> None:
+        try:
+            right = window.mapToGlobal(window.rect().topRight()).x() - 8
+            if fly.x() + fly.width() > right:
+                fly.move(max(window.mapToGlobal(window.rect().topLeft()).x() + 8, right - fly.width()), fly.y())
+        except RuntimeError:  # closed before the animation finished
+            pass
+
+    QTimer.singleShot(0, fix)
+    QTimer.singleShot(260, fix)  # after the drop-down animation settles
+
+
 def open_run_once(window, target: QWidget, db: Database, runner: ScheduleRunner, prefill: dict,
                   on_repeat=None) -> Flyout:
     view = RunOnceView(db, runner, prefill)
     fly = Flyout.make(view, target, window, FlyoutAnimationType.DROP_DOWN if target.y() < 200
                       else FlyoutAnimationType.PULL_UP)
+    keep_inside(fly, window)
 
     def done(sid: int) -> None:
         fly.close()
         s = db.schedule(sid)
-        InfoBar.success("Scheduled", f"“{s.name}” runs {fmt_when(s.run_at)}", parent=window,
+        InfoBar.success("Scheduled", f"“{s.name}” runs {plain_when(datetime.fromtimestamp(s.run_at))}", parent=window,
                         position=InfoBarPosition.TOP_RIGHT, duration=3500)
 
     def repeat(d: dict) -> None:

@@ -1,21 +1,19 @@
 """Create / edit a scheduled prompt."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from PySide6.QtCore import QDate, QDateTime, QTime, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     ComboBox,
-    FastCalendarPicker,
     LineEdit,
     MessageBoxBase,
     PlainTextEdit,
     SegmentedWidget,
     SubtitleLabel,
-    TimePicker,
 )
 
 from orchestrator.core import model_registry
@@ -24,6 +22,7 @@ from orchestrator.core.scheduler import CRON_PRESETS, describe, fmt_when, next_f
 from orchestrator.core.session_manager import POLICIES
 from orchestrator.storage.db import Database, Schedule
 from orchestrator.ui.theme import palette
+from orchestrator.ui.when_picker import WhenPicker
 
 CUSTOM = "Custom cron…"
 
@@ -36,7 +35,7 @@ class ScheduleDialog(MessageBoxBase):
         self.result_data: dict | None = None
         muted = f"color:{palette()['muted']};"
 
-        self.viewLayout.addWidget(SubtitleLabel("Edit schedule" if sched and sched.id else "New repeating schedule", self))
+        self.viewLayout.addWidget(SubtitleLabel("Edit schedule" if sched and sched.id else "New schedule", self))
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
@@ -108,16 +107,9 @@ class ScheduleDialog(MessageBoxBase):
         self.onceBox = QWidget(self)
         ol = QHBoxLayout(self.onceBox)
         ol.setContentsMargins(0, 0, 0, 0)
-        self.date = FastCalendarPicker(self.onceBox)
-        self.time = TimePicker(self.onceBox)
-        soon = datetime.now() + timedelta(hours=1)
-        self.date.setDate(QDate(soon.year, soon.month, soon.day))
-        self.time.setTime(QTime(soon.hour, 0))
-        self.date.dateChanged.connect(lambda _d: self._update_preview())
-        self.time.timeChanged.connect(lambda _t: self._update_preview())
-        ol.addWidget(self.date)
-        ol.addWidget(self.time)
-        ol.addStretch(1)
+        self.picker = WhenPicker(self.onceBox)  # chips + date + 15-minute time list, read back in words
+        self.picker.changed.connect(self._update_preview)
+        ol.addWidget(self.picker, 1)
         whenBox = QVBoxLayout()
         whenBox.addWidget(self.repeatBox)
         whenBox.addWidget(self.onceBox)
@@ -215,11 +207,13 @@ class ScheduleDialog(MessageBoxBase):
         self._update_preview()
 
     def _run_at(self) -> float:
-        d, t = self.date.getDate(), self.time.getTime()
-        return QDateTime(d, t).toSecsSinceEpoch()
+        return self.picker.when().timestamp()
 
     def _update_preview(self) -> None:
         kind = self.when.currentRouteKey() or "cron"
+        self.preview.setVisible(kind != "once")  # the picker already says it in words
+        if kind == "once":
+            return
         try:
             nxt = next_fire(kind, self.cron.text().strip(), self._run_at())
             text = describe({"kind": kind, "cron": self.cron.text().strip(), "run_at": self._run_at()})
@@ -248,9 +242,7 @@ class ScheduleDialog(MessageBoxBase):
                 self.preset.setCurrentIndex(idx if idx >= 0 else self.preset.count() - 1)
                 self.cron.setText(s.cron)
             elif s.run_at:
-                dt = datetime.fromtimestamp(s.run_at)
-                self.date.setDate(QDate(dt.year, dt.month, dt.day))
-                self.time.setTime(QTime(dt.hour, dt.minute))
+                self.picker.set_when(datetime.fromtimestamp(s.run_at))
             self.target.setCurrentIndex(max(0, self.target.findData(s.new_or_resume)))
             self.permission.setCurrentIndex(max(0, self.permission.findData(s.permission)))
             self.missed.setCurrentIndex(max(0, self.missed.findData(s.missed)))

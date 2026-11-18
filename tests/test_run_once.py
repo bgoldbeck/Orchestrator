@@ -42,12 +42,12 @@ def test_run_once_view_schedules_continue_chat(qapp, tmp_path):
                                     "effort": "low", "project_id": proj.id, "session_id": chat.id})
     got = []
     view.scheduled.connect(got.append)
-    view.group.button(0).setChecked(True)  # In 15 min
+    view.picker.select("In 1 hour")
     view._schedule()
     s = db.schedule(got[0])
     assert s.kind == "once" and s.new_or_resume == "resume" and s.session_id == chat.id
     assert s.engine == "claude" and s.permission == "read-only" and s.prompt == "Check CI"
-    assert 14 * 60 <= s.run_at - time.time() <= 16 * 60
+    assert 59 * 60 <= s.run_at - time.time() <= 61 * 60
     view.cont.setChecked(False)  # new chat instead
     assert view.data()["new_or_resume"] == "new" and view.data()["session_id"] is None
 

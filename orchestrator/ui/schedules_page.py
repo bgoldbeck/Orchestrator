@@ -5,8 +5,9 @@ import asyncio
 from datetime import datetime
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QBoxLayout, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
+    FlowLayout,
     BodyLabel,
     CaptionLabel,
     FluentIcon as FIF,
@@ -25,7 +26,7 @@ from qfluentwidgets import (
 
 from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
-from orchestrator.core.scheduler import ScheduleRunner, describe, fmt_when
+from orchestrator.core.scheduler import ScheduleRunner, describe, fmt_when, plain_when
 from orchestrator.core.session_manager import POLICIES
 from orchestrator.storage.db import Database, Schedule
 from orchestrator.ui.schedule_dialog import ScheduleDialog
@@ -67,10 +68,14 @@ class ScheduleCard(QFrame):
         title = QVBoxLayout()
         title.setSpacing(0)
         name = StrongBodyLabel(s.name, self)
+        name.setWordWrap(True)
         proj = db.project(s.project_id)
         model_label = model_registry.label(db, s.engine, s.model or "")
-        sub = CaptionLabel(f"{proj.name if proj else '?'}  ·  {ENGINES.get(s.engine, s.engine)} · {model_label} · "
+        kind = "Orchestration · planner " if s.target == "orchestration" else ""
+        sub = CaptionLabel(f"{proj.name if proj else '?'}  ·  {kind}{ENGINES.get(s.engine, s.engine)} · {model_label} · "
                            f"{s.effort or 'default'}", self)
+        sub.setWordWrap(True)
+        sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         sub.setStyleSheet(f"color:{p['muted']};")
         title.addWidget(name)
         title.addWidget(sub)
@@ -94,12 +99,15 @@ class ScheduleCard(QFrame):
 
         prompt = BodyLabel(s.prompt if len(s.prompt) < 220 else s.prompt[:217] + "…", self)
         prompt.setWordWrap(True)
+        prompt.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         prompt.setStyleSheet(f"color:{p['text']}; padding-left:36px;")
         lay.addWidget(prompt)
 
-        meta = QHBoxLayout()
+        metaBox = QWidget(self)
+        meta = FlowLayout(metaBox, needAni=False)  # chips wrap instead of forcing the card wider
         meta.setContentsMargins(36, 2, 0, 0)
-        meta.setSpacing(8)
+        meta.setHorizontalSpacing(8)
+        meta.setVerticalSpacing(6)
         if not model_registry.is_allowed(db, s.engine, s.model or "", strict=True):
             warn = chip("⚠ Model disabled", self, STATUS_COLORS["waiting"])
             warn.setObjectName("modelDisabledChip")
@@ -108,21 +116,27 @@ class ScheduleCard(QFrame):
             meta.addWidget(warn)
         meta.addWidget(chip(describe(s), self))
         meta.addWidget(chip(f"Permissions: {POLICIES.get(s.permission, {}).get('label', s.permission)}", self))
-        meta.addWidget(chip("New chat each run" if s.new_or_resume == "new" else "Continues a chat", self))
+        if s.target != "orchestration":
+            meta.addWidget(chip("New chat each run" if s.new_or_resume == "new" else "Continues a chat", self))
         if s.missed == "skip":
             meta.addWidget(chip("Skips missed runs", self))
-        meta.addStretch(1)
-        lay.addLayout(meta)
+        lay.addWidget(metaBox)
 
         foot = QHBoxLayout()
         foot.setContentsMargins(36, 4, 0, 0)
         nxt = page.runner.next_run(s.id) if s.enabled else None
         paused = page.runner.paused
-        nl = CaptionLabel(("Paused  ·  " if paused and s.enabled else "") +
-                          (f"Next run {fmt_when(nxt)}" if nxt else ("Off" if not s.enabled else "No upcoming run")), self)
+        if s.id in page.runner.waiting():
+            nxt_text = "Waiting for a free slot (the app-wide limit is reached)"
+        elif nxt:
+            nxt_text = "Next run " + plain_when(nxt.replace(tzinfo=None) if nxt.tzinfo is None else
+                                                nxt.astimezone().replace(tzinfo=None))
+        else:
+            nxt_text = "Off" if not s.enabled else "No upcoming run"
+        nl = CaptionLabel(("Paused  ·  " if paused and s.enabled else "") + nxt_text, self)
+        nl.setWordWrap(True)
         nl.setStyleSheet(f"color:{p['muted']};")
-        foot.addWidget(nl)
-        foot.addStretch(1)
+        foot.addWidget(nl, 1)
         runs = db.runs(s.id, 8)
         if runs:
             last = runs[0]
@@ -207,17 +221,23 @@ class SchedulesPage(SmoothScrollArea):
         self.expanded: set[int] = set()
         self.setObjectName("schedulesPage")
         self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setStyleSheet("QScrollArea { background:transparent; border:none; }")
         body = QWidget()
         body.setStyleSheet("background:transparent;")
         self.lay = QVBoxLayout(body)
         self.lay.setContentsMargins(36, 28, 36, 36)
         self.lay.setSpacing(12)
-        head = QHBoxLayout()
+        head = QBoxLayout(QBoxLayout.LeftToRight)  # controls drop below the title when narrow
+        self.head = head
+        ctrl = QHBoxLayout()
+        ctrl.addStretch(1)
         tcol = QVBoxLayout()
         tcol.setSpacing(2)
         tcol.addWidget(TitleLabel("Schedules", body))
         sub = CaptionLabel("Prompts that run on their own, even with the window closed (Orchestrator keeps running in the tray).", body)
+        sub.setWordWrap(True)
+        sub.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         sub.setStyleSheet(f"color:{palette()['muted']};")
         tcol.addWidget(sub)
         head.addLayout(tcol, 1)
@@ -226,16 +246,19 @@ class SchedulesPage(SmoothScrollArea):
         self.pause.setOffText("Paused")
         self.pause.setChecked(not runner.paused)
         self.pause.checkedChanged.connect(lambda on: runner.set_paused(not on))
-        head.addWidget(self.pause)
-        head.addSpacing(12)
+        ctrl.addWidget(self.pause)
+        ctrl.addSpacing(12)
         self.repeatBtn = PushButton(FIF.SYNC, "Repeat…", body)
         self.repeatBtn.setToolTip("Run on a schedule: every weekday, every hour, cron…")
         self.repeatBtn.clicked.connect(lambda: self.edit(None))
         self.onceBtn = PrimaryPushButton(FIF.DATE_TIME, "Run once", body)
-        self.onceBtn.setToolTip("Run a prompt once, later: in 15 min, tonight, tomorrow morning…")
+        self.onceBtn.setToolTip("Run a prompt once, later: in 5 hours, tonight, tomorrow morning…")
         self.onceBtn.clicked.connect(lambda: self.run_once({}, self.onceBtn))
-        head.addWidget(self.repeatBtn)
-        head.addWidget(self.onceBtn)
+        for b in (self.repeatBtn, self.onceBtn):
+            b.setMinimumWidth(b.sizeHint().width())  # never elide the label
+        ctrl.addWidget(self.repeatBtn)
+        ctrl.addWidget(self.onceBtn)
+        head.addLayout(ctrl)
         self.lay.addLayout(head)
         self.lay.addSpacing(6)
         self.list = QVBoxLayout()
@@ -251,6 +274,11 @@ class SchedulesPage(SmoothScrollArea):
         self._tick.timeout.connect(self.reload)
         self._tick.start(30_000)  # keep "next run in N min" fresh
         self.reload()
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        narrow = self.viewport().width() < 860
+        self.head.setDirection(QBoxLayout.TopToBottom if narrow else QBoxLayout.LeftToRight)
 
     def reload_soon(self) -> None:
         self._timer.start(150)
@@ -305,6 +333,7 @@ class SchedulesPage(SmoothScrollArea):
             badge.setPixmap(engine_badge(s.engine, 18))
             badge.setFixedSize(18, 18)
             name = BodyLabel(s.name, box)
+            name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             when = CaptionLabel(f"{r.status} · {fmt_when(r.started_at)}" + (f" · {r.note}" if r.note else ""), box)
             when.setStyleSheet(f"color:{p['muted']};")
             row.addWidget(dot)
@@ -363,6 +392,8 @@ class SchedulesPage(SmoothScrollArea):
         ic.setFixedSize(44, 44)
         t = StrongBodyLabel("No schedules yet", w)
         s = CaptionLabel("Use Run once to send a prompt later (tonight, tomorrow morning…), or Repeat… for every weekday, every hour, or cron.", w)
+        s.setWordWrap(True)
+        s.setAlignment(Qt.AlignCenter)
         s.setStyleSheet(f"color:{palette()['muted']};")
         for x in (ic, t, s):
             lay.addWidget(x, 0, Qt.AlignHCenter)

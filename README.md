@@ -141,6 +141,17 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   (`Orchestrator.exe --mcp-server`), so the built app needs no Python. Codex still comes from your own
   `codex` install on PATH.
 
+## Schedules: readable buttons, easy times
+
+![Run once](docs/screenshots/schedules-custom.png)
+
+- Buttons keep their full labels at any width; on a narrow window the Schedules header puts its controls on a
+  second row, chips wrap, and the page never scrolls sideways. The Run once popover stays inside the window.
+- Picking a time: chips **In 1 hour**, **In 5 hours** (default), **Tonight 9 PM**, **Tomorrow 8 AM**, or **Custom**
+  (calendar + a 15-minute time list instead of spin boxes). The choice is read back in words, e.g.
+  "Today at 6:30 PM, in 5 hours"; next runs on the cards read the same way. Used by Run once, the schedule
+  dialog's Once mode and orchestrations' Run once later.
+
 ## Orchestrate: clearer setup, queue and project auto-pick
 
 ![Queue](docs/screenshots/orch-queue.png)
