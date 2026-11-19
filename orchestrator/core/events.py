@@ -75,6 +75,24 @@ class RateLimit:
 
 
 @dataclass
+class Compacted:
+    """The engine summarized the conversation in place (Claude: compact_boundary). pre_tokens = size before."""
+
+    pre_tokens: int = 0
+    trigger: str = ""  # manual | auto
+
+
+@dataclass
+class ContextReset:
+    """The app reset a chat's context (see core/context_reset). how: compact | fresh."""
+
+    how: str
+    before: int = 0
+    after: int = 0
+    summary: str = ""
+
+
+@dataclass
 class ContextInfo:
     """What the engine loads into every prompt, after a turn (Claude: the same data as /context).
 
@@ -86,4 +104,4 @@ class ContextInfo:
     data: dict[str, Any] = field(default_factory=dict)
 
 
-Event = Union[Started, Text, ToolCall, ToolResult, NeedsApproval, Usage, Done, Error, RateLimit, ContextInfo]
+Event = Union[Started, Text, ToolCall, ToolResult, NeedsApproval, Usage, Done, Error, RateLimit, ContextInfo, Compacted, ContextReset]

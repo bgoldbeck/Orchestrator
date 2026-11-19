@@ -30,6 +30,8 @@ class TurnRequest:
     mcp_off: list[str] = field(default_factory=list)
     # Files attached to this message (already copied into the app's data folder).
     attachments: list[str] = field(default_factory=list)
+    # Codex only: auto-compact once the context passes this many tokens (0 = Codex default).
+    compact_limit: int = 0
 
 
 class AgentAdapter(abc.ABC):

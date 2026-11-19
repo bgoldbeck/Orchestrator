@@ -7,9 +7,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from orchestrator.core import auth
-from orchestrator.core import mcp_config, model_registry
+from orchestrator.core import context_reset, mcp_config, model_registry
 from orchestrator.core.events import (
+    Compacted,
     ContextInfo,
+    ContextReset,
     Done,
     Error,
     NeedsApproval,
@@ -119,8 +121,101 @@ class SessionManager(QObject):
         if s.source == "app" and not self.db.messages(sid):
             self.db.update_session(sid, title=make_title(text))
             self.session_updated.emit(sid)
-        self.db.add_message(sid, "user", "text", {"text": text, **({"attachments": files} if files else {})})
+        user_msg = {"text": text, **({"attachments": files} if files else {})}
+        how = context_reset.due(self.db, sid)
+        if how:  # reset first; the message goes in after the reset divider
+            self._tasks[sid] = asyncio.ensure_future(self._reset_then_run(sid, how, user_msg, policy, files))
+            return True
+        self.db.add_message(sid, "user", "text", user_msg)
         self._tasks[sid] = asyncio.ensure_future(self._run(sid, text, policy, files))
+        return True
+
+    async def _reset_then_run(self, sid: int, how: str, user_msg: dict, policy, files) -> None:
+        await self._reset(sid, how)
+        self.db.add_message(sid, "user", "text", user_msg)
+        await self._run(sid, user_msg["text"], policy, files)
+
+    def reset_now(self, sid: int, how: str) -> bool:
+        """Reset this chat's context now ("compact" | "fresh"). False if it is busy or has no session yet."""
+        s = self.db.session(sid)
+        if self.is_running(sid) or not s or not s.engine_session_id:
+            return False
+
+        async def go() -> None:
+            ok = await self._reset(sid, how)
+            self._set_status(sid, "done" if ok else "error")
+
+        self._tasks[sid] = asyncio.ensure_future(go())
+        return True
+
+    async def _reset(self, sid: int, how: str) -> bool:
+        """Compact in place (Claude /compact) or write a hand-off summary and start a new engine session.
+        Codex has no in-place compact from `codex exec`, so a manual Codex compact is a fresh start."""
+        s = self.db.session(sid)
+        proj = self.db.project(s.project_id) if s else None
+        if not s or not proj or not s.engine_session_id:
+            return False
+        if s.engine == "codex":
+            how = "fresh"
+        before, _cap = context_reset.context_size(self.db, sid)
+        self._set_status(sid, "running")
+        adapter = self._adapter(sid, s.engine, "read-only")  # a summary needs no tools
+        self._adapters[sid] = adapter
+        cwd = Path(s.cwd) if s.cwd and Path(s.cwd).is_dir() else Path(proj.path)
+        prompt = "/compact" if how == "compact" else context_reset.SUMMARY_PROMPT
+        carry = self.db.get_setting(f"chat.carry.{sid}", None)
+        if carry:  # first message after a fresh reset: the summary rides along, hidden in the chat
+            prompt = context_reset.carry_prompt(carry, prompt)
+            self.db.set_setting(f"chat.carry.{sid}", None)
+        req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
+                          resume_id=s.engine_session_id, sandbox="read-only", lean=self.lean_for(sid),
+                          mcp_off=mcp_config.off_for_run(self.db, s.engine, sid))
+        buf: list[str] = []
+        after, failed, compacted = 0, "", False
+        try:
+            async for ev in adapter.run(req):
+                if isinstance(ev, Text):
+                    if ev.delta:
+                        buf.append(ev.text)
+                    else:
+                        buf[:] = [ev.text]
+                elif isinstance(ev, Compacted):
+                    compacted = True
+                    before = ev.pre_tokens or before
+                elif isinstance(ev, ContextInfo):
+                    self.db.set_context(sid, ev.data)
+                    after = int(ev.data.get("total") or 0)
+                elif isinstance(ev, Error) and ev.fatal:
+                    failed = ev.message
+                elif isinstance(ev, Done) and ev.is_error and not failed:
+                    failed = ev.result or "the engine stopped"
+        except Exception as exc:  # noqa: BLE001
+            failed = f"{type(exc).__name__}: {exc}"
+        finally:
+            self._adapters.pop(sid, None)
+        summary = "".join(buf).strip()
+        if how == "compact":
+            from orchestrator.engines.claude import compact_summary
+
+            summary = compact_summary(s.engine_session_id) or ""
+            if not compacted and not failed:
+                failed = "Claude did not compact the session."
+        elif not failed and not summary:
+            failed = "No summary came back."
+        if failed:
+            msg = f"Context reset failed: {failed}"
+            self.db.add_message(sid, "system", "error", {"text": msg, "fatal": False, "level": "warning"})
+            self.event.emit(sid, Error(msg, fatal=False, kind="warning"))
+            return False
+        if how == "fresh":
+            self.db.detach_engine_session(sid)
+            self.db.set_setting(f"chat.carry.{sid}", summary)
+            after = len(summary) // 4
+            self.db.set_context(sid, None)
+            self.session_updated.emit(sid)
+        rec = {"how": how, "before": before, "after": after, "summary": summary}
+        self.db.add_message(sid, "system", "reset", rec)
+        self.event.emit(sid, ContextReset(**rec))
         return True
 
     async def stop(self, sid: int) -> None:
@@ -161,11 +256,16 @@ class SessionManager(QObject):
         cwd = Path(s.cwd) if s.cwd and Path(s.cwd).is_dir() else Path(proj.path)
         sandbox = (POLICIES[policy]["sandbox"] if policy in POLICIES
                    else self.db.get_setting("codex.sandbox", "workspace-write"))
+        carry = self.db.get_setting(f"chat.carry.{sid}", None)
+        if carry:  # first message after a fresh reset: the summary rides along, hidden in the chat
+            prompt = context_reset.carry_prompt(carry, prompt)
+            self.db.set_setting(f"chat.carry.{sid}", None)
         req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
                           resume_id=s.engine_session_id,
                           sandbox=self.run_options.get(sid, {}).get("sandbox", sandbox),
                           mcp=self.mcp_for(sid), lean=self.lean_for(sid),
-                          mcp_off=mcp_config.off_for_run(self.db, s.engine, sid), attachments=list(files or []))
+                          mcp_off=mcp_config.off_for_run(self.db, s.engine, sid), attachments=list(files or []),
+                          compact_limit=context_reset.codex_limit(self.db, sid) if s.engine == "codex" else 0)
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"

@@ -32,13 +32,14 @@ from qfluentwidgets import (
 from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.indexer import load_history
-from orchestrator.core.events import Done, Error, NeedsApproval, Text, ToolCall, ToolResult, Usage
+from orchestrator.core.events import ContextReset, Done, Error, NeedsApproval, Text, ToolCall, ToolResult, Usage
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.core.prompt_display import split_prompt
 from orchestrator.storage.db import Database, Session
 from orchestrator.ui.chat_widgets import (
     ApprovalCard,
     ContextChip,
+    ResetDivider,
     CodeBlock,
     AssistantMessage,
     NoticeCard,
@@ -757,6 +758,9 @@ class ChatView(QWidget):
                 self._add(self._notice(m["text"], kind), False)
             elif k == "context":
                 self._add(ContextChip(m.get("tags") or []), False)
+            elif k == "reset":
+                self._add(ResetDivider(m.get("how", "compact"), m.get("before", 0), m.get("after", 0),
+                                       m.get("summary", "")), False)
             elif k == "app_change":
                 if m.get("undone"):
                     continue  # the original card shows "Undone"
@@ -929,6 +933,11 @@ class ChatView(QWidget):
             self._add(self._notice(ev.message, ev.kind))
             if ev.fatal is False and self.mgr.is_running(sid):
                 self._show_dots()
+        elif isinstance(ev, ContextReset):
+            self._flush_render()
+            self._current = None
+            self._add(ResetDivider(ev.how, ev.before, ev.after, ev.summary))
+            self.update_usage()
         elif isinstance(ev, Usage):
             self._usage = ev
         elif isinstance(ev, Done):

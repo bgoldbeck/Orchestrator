@@ -464,6 +464,50 @@ class ContextChip(QWidget):
         lay.addWidget(chip)
 
 
+class ResetDivider(QWidget):
+    """Where a chat's context was reset: a line across with the sizes, click to read the carry-over summary."""
+
+    def __init__(self, how: str, before: int, after: int, summary: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from orchestrator.core.context_reset import fmt_k
+
+        p = palette()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 6, 0, 6)
+        lay.setSpacing(4)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        def line() -> QFrame:
+            f = QFrame(self)
+            f.setFixedHeight(1)
+            f.setStyleSheet(f"background:{p['border']};")
+            return f
+
+        what = "Context compacted" if how == "compact" else "Continued in a fresh chat"
+        sizes = f"{fmt_k(before)} → {fmt_k(after)}" if after else fmt_k(before)
+        self.label = QLabel(f"{what}  ·  {sizes}  ·  carry-over summary ▸", self)
+        self.label.setObjectName("resetDivider")
+        self.label.setCursor(Qt.PointingHandCursor)
+        self.label.setStyleSheet(f"#resetDivider {{ color:{p['muted']}; font-size:{ui_pt(8.5)}; background:transparent; }}")
+        row.addWidget(line(), 1)
+        row.addWidget(self.label)
+        row.addWidget(line(), 1)
+        lay.addLayout(row)
+        self.summary = QLabel(summary, self)
+        self.summary.setWordWrap(True)
+        self.summary.setStyleSheet(f"color:{p['muted']}; background:{p['card']}; border:1px solid {p['border']};"
+                                   f" border-radius:8px; padding:8px 12px;")
+        self.summary.setVisible(False)
+        lay.addWidget(self.summary)
+        self.label.mousePressEvent = lambda _e: self.toggle()  # noqa: E731
+
+    def toggle(self) -> None:
+        self.summary.setVisible(not self.summary.isVisible())
+        t = self.label.text()
+        self.label.setText(t[:-1] + ("▾" if self.summary.isVisible() else "▸"))
+
+
 class ApprovalCard(QFrame):
     answered = Signal(bool)
 

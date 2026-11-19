@@ -177,6 +177,8 @@ def build_codex_cmd(exe: str, req: TurnRequest) -> list[str]:
         common += ["-m", req.model]
     if req.effort:
         common += ["-c", f'model_reasoning_effort="{req.effort}"']
+    if req.compact_limit:
+        common += ["-c", f"model_auto_compact_token_limit={int(req.compact_limit)}"]
     if req.resume_id:
         # `exec resume` has no -s/-C; sandbox via config, cwd via process cwd.
         return [exe, "exec", "resume", *common, "-c", f'sandbox_mode="{req.sandbox}"', req.resume_id, "-"]

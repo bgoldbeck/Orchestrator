@@ -105,6 +105,156 @@ class StackBar(QWidget):
         p.end()
 
 
+class SizeBar(QWidget):
+    """Context used so far, with a tick at the reset point."""
+
+    def __init__(self, used: int, cap: int, mark: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.used, self.cap, self.mark = used, max(cap, 1), mark
+        self.setFixedHeight(16)
+
+    def paintEvent(self, _e) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        w, h = self.width(), 10
+        y = (self.height() - h) / 2
+        p.setBrush(QColor(128, 128, 128, 50))
+        p.drawRoundedRect(QRectF(0, y, w, h), 5, 5)
+        frac = min(1.0, self.used / self.cap)
+        over = self.used >= self.mark
+        p.setBrush(QColor("#fb923c" if over else palette()["accent"]))
+        p.drawRoundedRect(QRectF(0, y, max(h, w * frac), h), 5, 5)
+        if self.mark < self.cap:
+            x = w * self.mark / self.cap
+            p.setBrush(QColor(palette()["text"]))
+            p.drawRect(QRectF(x - 1, 0, 2, self.height()))
+        p.end()
+
+
+class ResetSection(QWidget):
+    """Context reset point for this chat: size bar, reset point, what happens, and reset-now buttons."""
+
+    def __init__(self, db: Database, mgr, sid: int, engine: str, ctx: dict, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        from qfluentwidgets import ComboBox, PrimaryPushButton, PushButton
+
+        from orchestrator.core import context_reset as R
+        from orchestrator.ui.number_box import NumberBox
+
+        self.db, self.mgr, self.sid = db, mgr, sid
+        p = palette()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 8, 0, 10)
+        lay.setSpacing(6)
+        used, cap = context_size(db, sid, engine, ctx)
+        at = R.reset_at(db, sid)
+        lay.addWidget(StrongBodyLabel("Context reset point", self))
+        cap_txt = f" of {R.fmt_k(cap)}" if cap else ""
+        left = max(0, at - used)
+        lay.addWidget(CaptionLabel(f"{R.fmt_k(used)}{cap_txt} used  ·  resets at {R.fmt_k(at)}"
+                                   + (f"  ·  {R.fmt_k(left)} to go" if left else "  ·  resets before the next message"),
+                                   self))
+        lay.addWidget(SizeBar(used, cap or max(at, used) * 1.25, at, self))
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(BodyLabel("Reset at", self))
+        self.at = NumberBox(self, R.MIN_AT // 1000, 2000, at // 1000)
+        self.at.setObjectName("resetAtK")
+        row.addWidget(self.at)
+        row.addWidget(BodyLabel("k tokens, then", self))
+        self.action = ComboBox(self)
+        self.action.setObjectName("resetAction")
+        for k, label in R.ACTIONS.items():
+            self.action.addItem(label, userData=k)
+        self.action.setCurrentIndex(list(R.ACTIONS).index(R.action(db, sid)))
+        row.addWidget(self.action, 1)
+        lay.addLayout(row)
+        self.own = CheckBox("Use the app default (Settings)", self)
+        self.own.setChecked(not R.chat_override(db, sid))
+        lay.addWidget(self.own)
+
+        btns = QHBoxLayout()
+        self.compactNow = PrimaryPushButton("Compact now", self)
+        self.compactNow.setObjectName("compactNow")
+        self.freshNow = PushButton("Fresh chat with summary", self)
+        self.freshNow.setObjectName("freshNow")
+        btns.addWidget(self.compactNow)
+        btns.addWidget(self.freshNow)
+        btns.addStretch(1)
+        lay.addLayout(btns)
+        self.status = CaptionLabel("", self)
+        self.status.setStyleSheet(f"color:{p['muted']};")
+        lay.addWidget(self.status)
+        s = db.session(sid)
+        if not s or not s.engine_session_id:
+            self.status.setText("Nothing to reset yet: send a message first.")
+        elif mgr.is_running(sid):
+            self.status.setText("This chat is busy. Reset when the reply is done.")
+        self.status.setVisible(bool(self.status.text()))
+        if self.status.text():
+            self.compactNow.setEnabled(False)
+            self.freshNow.setEnabled(False)
+        if engine == "codex":
+            self.compactNow.setToolTip("Codex can't compact in place from Orchestrator, so this starts a fresh "
+                                       "Codex session with a carry-over summary.")
+        self.compactNow.clicked.connect(lambda: self._reset("compact"))
+        self.freshNow.clicked.connect(lambda: self._reset("fresh"))
+        self.at.valueChanged.connect(self._save)
+        self.action.currentIndexChanged.connect(self._save)
+        self.own.toggled.connect(self._own_toggled)
+        note = CaptionLabel(
+            "Compact keeps this chat and writes the summary into the Claude Code session, so the Claude desktop app "
+            "sees the same reset when you open the chat there. Fresh chat leaves this one as it is."
+            if engine == "claude" else
+            "Codex compacts on its own at the reset point (same summary step as /compact in the Codex CLI).", self)
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{p['muted']};")
+        lay.addWidget(note)
+
+
+    def _save(self, *_a) -> None:
+        from orchestrator.core import context_reset as R
+
+        if self.own.isChecked():
+            self.own.blockSignals(True)
+            self.own.setChecked(False)
+            self.own.blockSignals(False)
+        R.set_chat_override(self.db, self.sid, at=int(self.at.value()) * 1000, action=self.action.currentData())
+
+    def _own_toggled(self, on: bool) -> None:
+        from orchestrator.core import context_reset as R
+
+        if on:
+            R.set_chat_override(self.db, self.sid)
+            for w, v in ((self.at, R.default_at(self.db) // 1000),
+                         (self.action, list(R.ACTIONS).index(R.default_action(self.db)))):
+                w.blockSignals(True)
+                (w.setValue if w is self.at else w.setCurrentIndex)(v)
+                w.blockSignals(False)
+        else:
+            self._save()
+
+    def _reset(self, how: str) -> None:
+        if self.mgr.reset_now(self.sid, how):
+            w = self.parent()
+            while w is not None and not isinstance(w, MessageBoxBase):
+                w = w.parent()
+            if w is not None:
+                w.accept()
+        else:
+            self.status.setText("Couldn't start the reset: the chat is busy or has no session yet.")
+            self.status.show()
+
+
+def context_size(db: Database, sid: int, engine: str, ctx: dict | None) -> tuple[int, int]:
+    """(tokens in the context now, context window or 0); see core/context_reset."""
+    from orchestrator.core.context_reset import context_size as size
+
+    return size(db, sid)
+
+
 def _row(parent: QWidget, color: str | None, name: str, tokens: str, note: str = "") -> QHBoxLayout:
     row = QHBoxLayout()
     row.setSpacing(8)
@@ -157,6 +307,8 @@ class ContextDialog(MessageBoxBase):
             lay.addWidget(c)
 
         caption(turn_text(db.last_usage(sid)) + " Cached input costs about a tenth of new input.")
+        if s:
+            lay.addWidget(ResetSection(db, mgr, sid, s.engine, ctx, body))
         if s and s.engine != "claude":
             caption("Codex reports only totals per turn, not a breakdown, so there is nothing more to show here.")
         elif not ctx:

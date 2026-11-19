@@ -8,12 +8,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from pathlib import Path
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
 from orchestrator.core import auth
 from orchestrator.core.events import (
+    Compacted,
     ContextInfo,
     Done,
     Error,
@@ -100,6 +102,10 @@ def map_claude_message(msg: Any, st: ClaudeMapState) -> list[Event]:
         ensure_started(msg.data.get("session_id"))
         if msg.subtype == "init":
             st.init = dict(msg.data)
+        elif msg.subtype == "compact_boundary":
+            meta = msg.data.get("compact_metadata") or msg.data.get("compactMetadata") or {}
+            out.append(Compacted(pre_tokens=int(meta.get("pre_tokens") or meta.get("preTokens") or 0),
+                                 trigger=str(meta.get("trigger") or "")))
     elif isinstance(msg, StreamEvent):
         ensure_started(msg.session_id)
         if msg.parent_tool_use_id:  # sub-agent chatter: skip in M1
@@ -149,6 +155,35 @@ def map_claude_message(msg: Any, st: ClaudeMapState) -> list[Event]:
                              kind="auth" if _is_auth_error(text) else "error"))
         out.append(Done(is_error=msg.is_error, result=msg.result or ""))
     return out
+
+
+def compact_summary(engine_session_id: str, root: Path | None = None) -> str:
+    """The newest carry-over summary Claude Code wrote into a session file (isCompactSummary), or ""."""
+    if not engine_session_id:
+        return ""
+    if root is None:
+        from orchestrator.core.indexer import claude_root
+
+        root = claude_root()
+    for f in Path(root).glob(f"*/{engine_session_id}.jsonl"):
+        last = ""
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if '"isCompactSummary"' not in line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if e.get("isCompactSummary"):
+                        c = (e.get("message") or {}).get("content")
+                        last = c if isinstance(c, str) else _result_text(c)
+        except OSError:
+            continue
+        if last:
+            return last.strip()
+    return ""
 
 
 def _child_env(token_env: dict[str, str]) -> dict[str, str]:
