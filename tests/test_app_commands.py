@@ -137,7 +137,7 @@ def test_set_appearance_relative_and_undo(env):
     res = run(loop, ctl.handle(sid, "set_appearance", {"font_size": "bigger", "chat_font_size": "bigger"}))
     look = A.load(db)
     assert look.ui_size == 10.5 and look.chat_size == 11.0
-    assert "UI font size 10 → 10.5 pt" in res["applied"]
+    assert "Font size 10 → 10.5 pt" in res["applied"]
     run(loop, ctl.handle(sid, "set_appearance", {"theme": "light", "density": "compact", "accent": "violet"}))
     assert A.load(db).theme == "Light" and A.load(db).accent == "Violet"
     ctl.undo(res["change_id"])
@@ -233,7 +233,7 @@ def test_chat_fast_path_card_and_undo(env):
     assert sent == []  # no model call
     assert A.load(db).ui_size == 10.5
     cards = view.column.findChildren(AppliedCard)
-    assert cards and cards[-1].label.text().startswith("Applied: UI font size 10 → 10.5 pt")
+    assert cards and cards[-1].label.text().startswith("Applied: Font size 10 → 10.5 pt")
     cards[-1].undoBtn.click()
     flush()  # undoing the font size re-renders the chat
     live = view.column.findChildren(AppliedCard)

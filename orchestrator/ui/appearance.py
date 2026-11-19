@@ -63,6 +63,19 @@ def load(db: Database) -> Look:
     return look
 
 
+def _nearest(choices: list[float], v: float) -> float:
+    return min(choices, key=lambda c: abs(c - v))
+
+
+def follow_ui_size(look: Look, old_ui: float) -> None:
+    """The main font size moved: move chat and code text by the same amount (their offsets stay)."""
+    d = look.ui_size - old_ui
+    if abs(d) < 1e-6:
+        return
+    look.chat_size = _nearest(CHAT_SIZES, look.chat_size + d)
+    look.code_size = _nearest(CODE_SIZES, look.code_size + d)
+
+
 def save(db: Database, look: Look) -> None:
     for attr, key in KEYS.items():
         db.set_setting(key, getattr(look, attr))

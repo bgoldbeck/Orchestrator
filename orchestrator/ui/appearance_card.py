@@ -87,10 +87,10 @@ class AppearanceCard(QWidget):
         row("Font", self.font, "Used for the whole app.")
         self.uiSize = self._combo([_fmt(v) for v in A.UI_SIZES], _fmt(self.look.ui_size),
                                   lambda v: self._set(ui_size=float(v.split()[0])))
-        row("UI font size", self.uiSize, "Menus, buttons, labels. Default 10 pt.")
+        row("Font size", self.uiSize, "The whole app, chats included. Default 10 pt.")
         self.chatSize = self._combo([_fmt(v) for v in A.CHAT_SIZES], _fmt(self.look.chat_size),
                                     lambda v: self._set(chat_size=float(v.split()[0])))
-        row("Chat font size", self.chatSize, "Messages and the prompt box. Default 10.5 pt.")
+        row("Chat text size", self.chatSize, "Fine-tune messages and the prompt box. Default 10.5 pt.")
         codeRow = QWidget(self)
         cl = QHBoxLayout(codeRow)
         cl.setContentsMargins(0, 0, 0, 0)
@@ -133,8 +133,15 @@ class AppearanceCard(QWidget):
 
     # ---- changes
     def _set(self, **kw) -> None:
+        old_ui = self.look.ui_size
         for k, v in kw.items():
             setattr(self.look, k, v)
+        if "ui_size" in kw:  # chats and code follow the main size
+            A.follow_ui_size(self.look, old_ui)
+            for cb, val in ((self.chatSize, self.look.chat_size), (self.codeSize, self.look.code_size)):
+                cb.blockSignals(True)
+                cb.setCurrentText(_fmt(val))
+                cb.blockSignals(False)
         A.save(self.db, self.look)
         # apply after the click/selection event finishes (theme switch restyles every widget)
         QTimer.singleShot(0, lambda: A.apply(self.look))

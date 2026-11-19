@@ -387,7 +387,13 @@ class AppControl(QObject):
                 new = max(7.0, min(24.0, new))
             return new
 
-        names = {"ui_size": "UI font size", "chat_size": "Chat font size", "code_size": "Code font size"}
+        names = {"ui_size": "Font size", "chat_size": "Chat text size", "code_size": "Code font size"}
+        if font_size not in (None, "") and chat_font_size in (None, ""):
+            old_ui, old_chat = look.ui_size, look.chat_size
+            look.ui_size = size(old_ui, font_size, A.UI_SIZES, "ui_size")
+            A.follow_ui_size(look, old_ui)
+            parts.append(f"Font size {old_ui:g} → {look.ui_size:g} pt (chats {old_chat:g} → {look.chat_size:g} pt)")
+            font_size = None
         for attr, val, choices in (("ui_size", font_size, A.UI_SIZES), ("chat_size", chat_font_size, A.CHAT_SIZES),
                                    ("code_size", code_font_size, A.CODE_SIZES)):
             if val not in (None, ""):
