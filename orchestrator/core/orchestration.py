@@ -20,9 +20,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, SignalInstance
 
-from orchestrator.core import concurrency, model_registry, routing
+from orchestrator.core import concurrency, limits, model_registry, queue_rules, review, routing
 from orchestrator.core.project_pick import find_projects
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.summaries import find_sessions
@@ -31,9 +31,13 @@ from orchestrator.storage.db import Database, Orchestration, Task, app_dir
 APP_ROOT = Path(__file__).resolve().parents[2]
 WAIT_LIMIT = 240  # seconds one wait_for call may block (kept under the tool timeout below)
 TOOL_TIMEOUT = 600
-ACTIVE = ("proposed", "queued", "running", "waiting")
+ACTIVE = ("proposed", "queued", "running", "waiting", "checking")
 CONFIRM_MODES = {"countdown": "Start after a short countdown", "always_ask": "Always ask me", "never": "Never ask"}
 COUNTDOWN_SEC = 10
+SILENT_SETTING = "orchestrate.silent_min"  # minutes without output before a running task counts as silent
+SILENT_DEFAULT = 20
+TICK_MS = 60_000  # re-check limits (a reset starts paused tasks) and silent tasks once a minute
+MAX_CRITERIA = 10
 FINISHED = ("done", "failed", "stopped")
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
@@ -45,8 +49,12 @@ When you are finished, end your final message with this report block, filled in:
 status: done | partial | failed
 summary: <one to three sentences on what you did and the result>
 files_changed: <comma-separated paths, or none>
+assumptions: <choices you made that the user did not specify, or none>
 open_questions: <questions or problems for the orchestrator, or none>
 ```"""
+
+CRITERIA_CLOSING = """
+criteria: <for each "done when" item, its number and met / not met, e.g. 1 met; 2 not met: why>"""
 
 SUBAGENT_INTRO = ("You are a sub-agent started by an orchestrator. Work only on the task below, in the "
                   "current folder. Nobody can answer questions while you work: make reasonable choices and "
@@ -62,8 +70,11 @@ You coordinate sub-agents with the `orchestrator` MCP tools:
   the same thing is cheaper than starting fresh.
 - find_projects(query) lists the user's project folders that match a description. A task may run in another
   project than this one: pass that project's name as `project` to delegate.
-- delegate(instructions, engine, model, effort, title, cwd, resume_session_id, reason, project) starts a sub-agent and returns
-  a task_id at once. Pass resume_session_id (a session_ref like "s:12") to continue an earlier chat; the user sees a
+- delegate(instructions, engine, model, effort, title, cwd, resume_session_id, reason, project, after, done_when,
+  files) starts a sub-agent and returns a task_id at once. after = task ids that must finish first (the task waits in
+  the queue until they are done). done_when = 1-10 short, checkable criteria, fixed once the task starts; the report
+  marks each met or not. files = paths the task will change, when you know them: two tasks that share a file never
+  run at the same time. Pass resume_session_id (a session_ref like "s:12") to continue an earlier chat; the user sees a
   reuse card and may choose to start fresh instead.
 - wait_for(task_ids) waits for tasks and returns their reports. If it says tasks are still pending, call it again.
 - task_status(task_id) checks without waiting. send_to_task(task_id, text) sends a follow-up to a finished sub-agent.
@@ -79,7 +90,8 @@ How to work:
 2. Delegate them. A sub-agent starts with no context, so give complete instructions (which files, what result).
    Give each a short title. Up to {max_parallel} run at once (fewer if the app's global limit is reached); the rest
    wait in a queue and start on their own.
-3. Call wait_for on the task ids. Read each report. If something failed or is missing, send a follow-up or delegate a fix.
+3. Call wait_for on the task ids. Read each report, including its assumptions and, when present, "checks" (the
+   project's tests, run by the app on the delivered work: a failed run makes the task failed; send a fix). If something failed or is missing, send a follow-up or delegate a fix.
    A task that failed on an automatically picked model is retried once by the app on a stronger setting.
 4. Do not edit files yourself. Sub-agents do the work.
 5. Finish with a short summary for the user: what each task did, files changed, and open questions.
@@ -94,7 +106,7 @@ Engines and models you may use (only these ids; strongest first per engine):
 
 # ---------------------------------------------------------------- reports
 _REPORT_BLOCK = re.compile(r"```report\s*\n(.*?)```", re.S | re.I)
-_FIELD = re.compile(r"^\s*(status|summary|files_changed|open_questions)\s*:\s*(.*)$", re.I)
+_FIELD = re.compile(r"^\s*(status|summary|files_changed|assumptions|criteria|open_questions)\s*:\s*(.*)$", re.I)
 EDIT_TOOLS = {"edit", "Edit", "Write", "MultiEdit", "NotebookEdit"}
 
 
@@ -129,9 +141,28 @@ def parse_report(text: str) -> dict[str, Any] | None:
     status = out["status"].lower().split()[0].strip("|*") if out["status"] else "done"
     if status not in ("done", "partial", "failed"):
         status = "done" if "done" in out["status"].lower() else "partial"
-    return {"status": status, "summary": out.get("summary", "").strip(),
-            "files_changed": _split_list(out.get("files_changed", "")),
-            "open_questions": _split_list(out.get("open_questions", ""))}
+    rep = {"status": status, "summary": out.get("summary", "").strip(),
+           "files_changed": _split_list(out.get("files_changed", "")),
+           "open_questions": _split_list(out.get("open_questions", ""))}
+    if _split_list(out.get("assumptions", "")):
+        rep["assumptions"] = _split_list(out["assumptions"])
+    if out.get("criteria", "").strip():
+        rep["criteria"] = out["criteria"].strip()
+    return rep
+
+
+def closing_for(t: Task) -> str:
+    """The report instructions for a task; with fixed "done when" criteria, ask for each to be marked."""
+    if not t.done_when:
+        return CLOSING
+    return CLOSING[:-4] + CRITERIA_CLOSING + "\n```"
+
+
+def criteria_block(done_when: list[str]) -> str:
+    if not done_when:
+        return ""
+    lines = "\n".join(f"{i}. {c}" for i, c in enumerate(done_when, 1))
+    return "\n\nDone when (fixed, do not change; the result is checked against these):\n" + lines
 
 
 def strip_report(text: str) -> str:
@@ -268,7 +299,19 @@ class OrchestrationManager(QObject):
         self._answers: dict[int, asyncio.Event] = {}
         self._retry_text: dict[int, str] = {}  # task id -> follow-up text for an escalated retry
         self.rule_offers: dict[int, list[dict]] = {}  # orchestration id -> offered preference rules (unsaved)
+        self._jobs: set = set()
+        self._merge_lock = asyncio.Lock()
+        self._limit_override: dict[str, float] = {}  # engine -> reset time the user chose to ignore
+        self._activity: dict[int, float] = {}  # session id -> last event time
+        self._snooze: dict[int, float] = {}  # task id -> "keep waiting" pressed at
+        self._silent: set[int] = set()
         mgr.mcp_provider = self.mcp_for
+        if isinstance(getattr(mgr, "event", None), SignalInstance):  # output from any chat = a sign of life
+            mgr.event.connect(self._on_event)
+        self._timer = QTimer(self)
+        self._timer.setInterval(TICK_MS)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
         mgr.status_changed.connect(self._on_status)
         concurrency.hub.freed.connect(self.pump_all)
 
@@ -397,8 +440,10 @@ class OrchestrationManager(QObject):
         if not orch:
             raise OrchestrationError(f"Unknown orchestration {oid}.")
         if op == "delegate":
-            return self.delegate(oid, **{k: args.get(k, "") for k in (
-                "instructions", "engine", "model", "effort", "title", "cwd", "resume_session_id", "reason", "project")})
+            kw = {k: args.get(k, "") for k in (
+                "instructions", "engine", "model", "effort", "title", "cwd", "resume_session_id", "reason", "project")}
+            kw.update({k: args.get(k) for k in ("after", "done_when", "files")})
+            return self.delegate(oid, **kw)
         if op == "find_projects":
             return find_projects(self.db, str(args.get("query") or ""))
         if op == "suggest_preference":
@@ -407,7 +452,8 @@ class OrchestrationManager(QObject):
             return self.find(oid, str(args.get("query") or ""), str(args.get("project") or ""))
         if op == "ask":
             return await self.ask(oid, str(args.get("question") or ""), list(args.get("options") or []),
-                                  int(args.get("question_id") or 0), float(args.get("timeout") or WAIT_LIMIT))
+                                  int(args.get("question_id") or 0), float(args.get("timeout") or WAIT_LIMIT),
+                                  str(args.get("recommended") or ""))
         if op == "status":
             tid = int(args.get("task_id") or 0)
             if tid:
@@ -428,12 +474,16 @@ class OrchestrationManager(QObject):
 
     def delegate(self, oid: int, instructions: str, engine: str = "", model: str = "", effort: str = "",
                  title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "",
-                 project: str = "") -> dict[str, Any]:
+                 project: str = "", after: Any = None, done_when: Any = None,
+                 files: Any = None) -> dict[str, Any]:
         orch = self.db.orchestration(oid)
         if not orch or orch.status != "running":
             raise OrchestrationError("This orchestration was stopped; no new tasks can start.")
         if not instructions.strip():
             raise OrchestrationError("instructions is empty.")
+        deps = self._deps(oid, after)
+        criteria = self._criteria(done_when)
+        files = [str(f).strip() for f in (_as_list(files)) if str(f).strip()][:50]
         proj = self.db.project(orch.project_id)
         if project:
             proj = self.project_ref(project)
@@ -472,7 +522,8 @@ class OrchestrationManager(QObject):
             work = target
         title = " ".join((title or instructions).split())[:60]
         task = self.db.add_task(oid, engine, model, effort, title, instructions.strip(), str(work))
-        self.db.update_task(task.id, pick_reason=reason or "Chosen by the planner", auto_picked=int(auto))
+        self.db.update_task(task.id, pick_reason=reason or "Chosen by the planner", auto_picked=int(auto),
+                            depends_on=deps, done_when=criteria, files=files)
         sid = self.db.create_session(proj.id, engine, model, effort, parent_id=orch.session_id,
                                      title=title, cwd=str(work)).id
         self.db.update_task(task.id, session_id=sid)
@@ -492,7 +543,29 @@ class OrchestrationManager(QObject):
         if t.status == "proposed":
             res["note"] = ("Waiting for the user to confirm on the board (reuse or model pick); it then starts "
                            "on its own. Call wait_for([task_id]) as usual.")
+        elif t.status == "queued":
+            res["waiting"] = queue_rules.why_waiting(self.db, t)
+            res["note"] = "Queued: " + res["waiting"] + ". It starts on its own; call wait_for([task_id])."
         return res
+
+    def _deps(self, oid: int, after: Any) -> list[int]:
+        out = []
+        for x in _as_list(after):
+            try:
+                tid = int(str(x).strip().lstrip("T-").lstrip("t-"))
+            except ValueError:
+                raise OrchestrationError(f"after: {x!r} is not a task id.") from None
+            self._own_task(oid, tid)
+            if tid not in out:
+                out.append(tid)
+        return out
+
+    @staticmethod
+    def _criteria(done_when: Any) -> list[str]:
+        items = [" ".join(str(c).split()) for c in _as_list(done_when) if str(c).strip()]
+        if len(items) > MAX_CRITERIA:
+            raise OrchestrationError(f"done_when: at most {MAX_CRITERIA} criteria.")
+        return [c[:300] for c in items]
 
     def project_ref(self, ref: str):
         """A project by name (case-insensitive) or folder path; raises a helpful error otherwise."""
@@ -587,14 +660,19 @@ class OrchestrationManager(QObject):
         return {"candidates": res, "note": ("Pass a session_ref as resume_session_id to delegate to continue it."
                                             if res else "No earlier chat matches; start fresh.")}
 
-    async def ask(self, oid: int, question: str, options: list[str], qid: int, timeout: float) -> dict[str, Any]:
+    async def ask(self, oid: int, question: str, options: list[str], qid: int, timeout: float,
+                  recommended: str = "") -> dict[str, Any]:
         q = self.db.question(qid) if qid else None
         if q and q.orchestration_id != oid:
             q = None
         if q is None:
             if not question.strip():
                 raise OrchestrationError("question is empty.")
-            q = self.db.add_question(oid, question.strip(), [str(o) for o in options][:6])
+            opts = [str(o) for o in options][:6]
+            rec = recommended.strip() or None
+            if rec and rec not in opts:
+                opts = [rec, *opts][:6]
+            q = self.db.add_question(oid, question.strip(), opts, rec)
             self.question_asked.emit(oid, q.id)
             self.changed.emit(oid)
         ev = self._answers.setdefault(q.id, asyncio.Event())
@@ -627,11 +705,21 @@ class OrchestrationManager(QObject):
         free = concurrency.free_slots(self.db)
         running: dict[int, int] = {}
         touched: set[int] = set()
+        paused = self.paused()
+        wt_on = bool(self.db.get_setting("orchestrate.worktrees", False))
         for t in self.db.queued_tasks():
             if free <= 0:
                 break
             orch = self.db.orchestration(t.orchestration_id)
             if not orch:
+                continue
+            state, dt = queue_rules.dep_state(self.db, t)
+            if state == "failed" and not t.hold:  # its input failed: ask the user instead of starting blind
+                self.db.update_task(t.id, hold={"kind": "dep_failed", "task": dt.id,
+                                                "text": f"Waiting for you: its dependency T-{dt.id} {dt.status}"})
+                touched.add(orch.id)
+                continue
+            if queue_rules.start_blocker(self.db, self.db.task(t.id), paused, wt_on, _git_root):
                 continue
             if t.orchestration_id not in running:
                 running[t.orchestration_id] = sum(1 for x in self.db.tasks(orch.id) if x.status in ("running", "waiting"))
@@ -677,14 +765,15 @@ class OrchestrationManager(QObject):
         self.mgr.run_options[sid] = {"claude_mode": "acceptEdits", "sandbox": "workspace-write"}
         first = not self.db.messages(sid)
         follow = self._retry_text.pop(t.id, None)
+        crit, close = criteria_block(t.done_when), closing_for(t)
         if first:
-            prompt = SUBAGENT_INTRO + t.instructions + CLOSING
+            prompt = SUBAGENT_INTRO + t.instructions + crit + close
         elif follow:
-            prompt = follow + CLOSING
+            prompt = follow + close
         elif t.reused:  # continuing an earlier chat: it has context, send just the task
-            prompt = "New task from the orchestrator:\n" + t.instructions + CLOSING
+            prompt = "New task from the orchestrator:\n" + t.instructions + crit + close
         else:
-            prompt = t.instructions + CLOSING
+            prompt = t.instructions + crit + close
         if not self.mgr.send(sid, prompt):
             self._finish(t.id, "failed", {"status": "failed", "summary": "Could not start the sub-agent "
                                           "(its model may be disabled, or the chat is busy).",
@@ -751,11 +840,165 @@ class OrchestrationManager(QObject):
                 self._finish(t.id, "stopped", rep)
             else:
                 rep = build_report(self.db, sid, status)
+                if rep["status"] == "failed" and self._requeue_on_limit(t, rep):
+                    return
                 if rep["status"] == "failed" and self._escalate(t, rep):
                     return
                 if t.escalated:
                     rep["escalated"] = t.pick_reason
-                self._finish(t.id, "failed" if rep["status"] == "failed" else "done", rep)
+                final = "failed" if rep["status"] == "failed" else "done"
+                proj = self._project_of(t)
+                cmd = review.check_command(self.db, proj.id) if (proj and final == "done") else ""
+                if cmd or (t.worktree and final == "done"):
+                    self.db.update_task(t.id, status="checking")
+                    self.task_changed.emit(t.orchestration_id, t.id)
+                    self._spawn(self._deliver(t.id, rep, cmd))
+                else:
+                    self._finish(t.id, final, rep)
+
+    # ---- delivery: checks, then merge
+    def _project_of(self, t: Task):
+        orch = self.db.orchestration(t.orchestration_id)
+        if not orch:
+            return None
+        projects = sorted(self.db.projects(), key=lambda p: -len(p.path))
+        cwd = str(Path(t.cwd or "").resolve()).lower() if t.cwd and not t.worktree else ""
+        hit = next((p for p in projects if cwd and cwd.startswith(str(Path(p.path).resolve()).lower())), None)
+        return hit or self.db.project(orch.project_id)
+
+    def _spawn(self, coro) -> None:
+        fut = asyncio.ensure_future(coro)
+        self._jobs.add(fut)
+        fut.add_done_callback(self._jobs.discard)
+
+    async def _deliver(self, tid: int, rep: dict, cmd: str) -> None:
+        t = self.db.task(tid)
+        if not t:
+            return
+        if cmd:
+            where = t.worktree or t.cwd or ""
+            proj = self._project_of(t)
+            if not t.worktree and proj:
+                where = _git_root(proj.path) or proj.path
+            checks = await asyncio.to_thread(review.run_checks, cmd, where)
+            self.db.update_task(tid, checks=checks)
+            rep["checks"] = {k: checks[k] for k in ("ok", "cmd", "exit", "sec", "tail")}
+            if not checks["ok"]:
+                rep["status"] = "failed"
+                rep["summary"] = f"The project's tests failed after this task (`{cmd}`, exit {checks['exit']}). " + \
+                    (rep.get("summary") or "")
+                self._finish(tid, "failed", rep)
+                return
+        t = self.db.task(tid)
+        if t.worktree:
+            if review.review_first(self.db):
+                await asyncio.to_thread(review.commit_worktree, t)
+                self.db.update_task(tid, merge_state="review",
+                                    merge_note="Waiting for your review before it is merged.")
+                rep["merge"] = "Waiting for the user's review before it is merged (branch " + review.branch_of(t) + ")."
+            else:
+                res = await self._merge(t)
+                rep["merge"] = res.note
+        self._finish(tid, "done", rep)
+
+    async def _merge(self, t: Task) -> review.MergeResult:
+        async with self._merge_lock:  # one merge at a time
+            res = await asyncio.to_thread(review.merge, t)
+        self.db.update_task(t.id, merge_state=res.state, merge_note=res.note)
+        if res.state == "merged":
+            self.db.update_task(t.id, worktree=None, reviewed_at=time.time())
+        return res
+
+    async def merge_task(self, tid: int) -> review.MergeResult | None:
+        """User pressed Merge (Review mode, or again after a conflict)."""
+        t = self.db.task(tid)
+        if not t or not t.worktree or t.merge_state not in ("review", "conflict", "failed"):
+            return None
+        res = await self._merge(t)
+        self.task_changed.emit(t.orchestration_id, tid)
+        self.changed.emit(t.orchestration_id)
+        concurrency.slot_freed()  # tasks that wait for this one may start now
+        return res
+
+    async def discard_task(self, tid: int) -> None:
+        t = self.db.task(tid)
+        if not t or not t.worktree:
+            return
+        res = await asyncio.to_thread(review.discard, t)
+        self.db.update_task(tid, merge_state=res.state, merge_note=res.note, worktree=None,
+                            reviewed_at=time.time())
+        for d in queue_rules.dependents(self.db, tid):  # what built on it should not start without the user
+            self.db.update_task(d.id, hold={"kind": "dep_failed", "task": tid,
+                                            "text": f"Waiting for you: its dependency T-{tid} was discarded"})
+        self.task_changed.emit(t.orchestration_id, tid)
+        self.changed.emit(t.orchestration_id)
+
+    def run_anyway(self, tid: int) -> None:
+        """Start a held task without the dependency that failed."""
+        t = self.db.task(tid)
+        if not t or not t.hold:
+            return
+        bad = (t.hold or {}).get("task")
+        self.db.update_task(tid, hold=None, depends_on=[d for d in t.depends_on if d != bad])
+        self.pump(t.orchestration_id)
+
+    # ---- usage limit pause
+    def paused(self) -> dict:
+        now = time.time()
+        p = limits.paused(self.db, now)
+        return {e: v for e, v in p.items() if self._limit_override.get(e, 0) < v.resets_at}
+
+    def ignore_limit(self, engine: str) -> None:
+        """Start tasks for `engine` anyway until this limit resets."""
+        p = limits.paused(self.db).get(engine)
+        if p:
+            self._limit_override[engine] = p.resets_at
+        self.pump_all()
+
+    def _requeue_on_limit(self, t: Task, rep: dict) -> bool:
+        """The plan limit stopped this task mid-turn: put it back in the queue instead of failing it."""
+        limits.forget_cache()
+        if t.engine not in self.paused():
+            return False
+        orch = self.db.orchestration(t.orchestration_id)
+        if not orch or orch.status != "running":
+            return False
+        self._retry_text[t.id] = "The usage limit stopped your last attempt. Continue the task where you left off."
+        self.db.update_task(t.id, status="queued", started_at=None)
+        self.task_changed.emit(t.orchestration_id, t.id)
+        self.changed.emit(t.orchestration_id)
+        concurrency.slot_freed()
+        return True
+
+    # ---- silent tasks
+    def _on_event(self, sid: int, _ev) -> None:
+        self._activity[sid] = time.time()
+
+    def silent_minutes(self, t: Task, now: float | None = None) -> int:
+        """Minutes without any output for a running task, when over the setting (0 = not silent)."""
+        limit = int(self.db.get_setting(SILENT_SETTING, SILENT_DEFAULT) or 0)
+        if limit <= 0 or t.status != "running" or not t.started_at:
+            return 0
+        now = now or time.time()
+        last = max(t.started_at, self._activity.get(t.session_id or 0, 0), self._snooze.get(t.id, 0))
+        mins = int((now - last) // 60)
+        return mins if mins >= limit else 0
+
+    def keep_waiting(self, tid: int) -> None:
+        self._snooze[tid] = time.time()
+        t = self.db.task(tid)
+        if t:
+            self.changed.emit(t.orchestration_id)
+
+    def _tick(self) -> None:
+        self.pump_all()  # a reset limit lets paused tasks start
+        silent = {t.id for t in self.db.tasks_running() if self.silent_minutes(t)}
+        for tid in silent ^ self._silent:
+            t = self.db.task(tid)
+            if t:
+                self.task_changed.emit(t.orchestration_id, tid)
+                self.changed.emit(t.orchestration_id)
+        self._silent = silent
 
     def _escalate(self, t: Task, rep: dict) -> bool:
         """An automatically picked task failed: retry once, same chat, more effort or a stronger model."""
@@ -811,6 +1054,18 @@ class OrchestrationManager(QObject):
             info["escalated"] = True
         if t.status == "proposed":
             info["note"] = "Waiting for the user to confirm on the board."
+        if t.status == "queued":
+            info["waiting"] = queue_rules.why_waiting(self.db, t, self.paused())
+        if t.status == "checking":
+            info["note"] = "Finished; the app is running the project's tests / merging."
+        if t.depends_on:
+            info["after"] = t.depends_on
+        if t.done_when:
+            info["done_when"] = t.done_when
+        if t.merge_state:
+            info["merge"] = {"state": t.merge_state, "note": t.merge_note}
+        if self.silent_minutes(t):
+            info["note"] = f"No output for {self.silent_minutes(t)} minutes."
         if t.worktree:
             info["worktree"] = t.worktree
             info["branch"] = f"orchestrator/task-{t.id}"
@@ -874,7 +1129,7 @@ class OrchestrationManager(QObject):
         t = self.db.task(tid)
         sid = t.session_id
         self.mgr.run_options[sid] = {"claude_mode": "acceptEdits", "sandbox": "workspace-write"}
-        if not self.mgr.send(sid, text.strip() + CLOSING):
+        if not self.mgr.send(sid, text.strip() + closing_for(t)):
             self._finish(tid, "failed", {"status": "failed", "summary": "Could not send the follow-up.",
                                          "files_changed": [], "open_questions": []})
             return self.task_info(self.db.task(tid))
@@ -888,7 +1143,8 @@ class OrchestrationManager(QObject):
         t = self.db.task(tid)
         if not t:
             return
-        if t.status == "queued":
+        if t.status in ("queued", "proposed"):
+            self.db.update_task(tid, hold=None)
             self._finish(tid, "stopped", {"status": "failed", "summary": "Stopped before it started.",
                                           "files_changed": [], "open_questions": []})
         elif t.status in ("running", "waiting") and t.session_id:
@@ -913,7 +1169,7 @@ class OrchestrationManager(QObject):
                                    title=t.title, cwd=t.cwd)
         self._events[tid] = asyncio.Event()
         self.db.update_task(tid, session_id=s.id, status="queued", result=None, started_at=None, finished_at=None,
-                            worktree=None)
+                            worktree=None, checks=None, merge_state=None, merge_note=None, hold=None)
         self.mgr.session_updated.emit(s.id)
         self.pump(orch.id)
 
@@ -936,3 +1192,11 @@ def _git_root(path: str) -> str | None:
     r = subprocess.run(["git", "-C", path, "rev-parse", "--show-toplevel"], capture_output=True, text=True,
                        creationflags=CREATE_NO_WINDOW)
     return str(Path(r.stdout.strip())) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _as_list(v: Any) -> list:
+    if v is None or v == "":
+        return []
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    return [x for x in re.split(r"[,;\n]", str(v)) if x.strip()]

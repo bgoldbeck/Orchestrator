@@ -391,6 +391,62 @@ class SettingsPage(SmoothScrollArea):
         fol.addLayout(self._switch_row(fo, "Retry failed automatic picks once",
                                        "More effort first, then the next stronger enabled model.",
                                        "orchestrate.escalate", True))
+        fol.addLayout(self._switch_row(fo, "Review changes before merging",
+                                       "Tasks that ran in their own git worktree wait in Waiting on you for Merge or "
+                                       "Discard. Off: they merge on their own when the project's tests pass.",
+                                       "orchestrate.review_before_merge", False))
+        fol.addLayout(self._switch_row(fo, "Pause new tasks when a usage limit is reached",
+                                       "Queued tasks wait for the 5-hour or weekly reset instead of failing; a task "
+                                       "the limit stopped goes back in the queue.", "orchestrate.pause_on_limit", True))
+        srow = QHBoxLayout()
+        scol = QVBoxLayout()
+        scol.setSpacing(0)
+        scol.addWidget(BodyLabel("Mark a task silent after (minutes)", fo))
+        ssub = CaptionLabel("A running task with no output this long gets a Silent badge and shows up in "
+                            "Waiting on you. 0 = off.", fo)
+        ssub.setStyleSheet(f"color:{palette()['muted']};")
+        scol.addWidget(ssub)
+        self.silentMin = NumberBox(fo)
+        self.silentMin.setObjectName("silentMinutes")
+        self.silentMin.setRange(0, 600)
+        self.silentMin.setValue(int(db.get_setting("orchestrate.silent_min", 20) or 0))
+        self.silentMin.valueChanged.connect(lambda v: db.set_setting("orchestrate.silent_min", int(v)))
+        srow.addLayout(scol, 1)
+        srow.addWidget(self.silentMin)
+        fol.addLayout(srow)
+        fol.addWidget(BodyLabel("Test command per project", fo))
+        tsub = CaptionLabel("Run by the app on each finished task's work (for example: pytest -q, npm test). "
+                            "A failing run marks the task failed with the output, so the orchestrator can fix it. "
+                            "Empty = no checks.", fo)
+        tsub.setWordWrap(True)
+        tsub.setStyleSheet(f"color:{palette()['muted']};")
+        fol.addWidget(tsub)
+        from qfluentwidgets import ComboBox, LineEdit
+
+        from orchestrator.core import review
+
+        trow = QHBoxLayout()
+        self.checkProject = ComboBox(fo)
+        self.checkProject.setMinimumWidth(180)
+        for pr in db.projects():
+            if not pr.auto:
+                self.checkProject.addItem(pr.name, userData=pr.id)
+        self.checkCmd = LineEdit(fo)
+        self.checkCmd.setObjectName("checkCommand")
+        self.checkCmd.setPlaceholderText("Test command, e.g. pytest -q")
+
+        def load_cmd(_i: int = 0) -> None:
+            pid = self.checkProject.currentData()
+            self.checkCmd.setText(review.check_command(db, pid) if pid else "")
+
+        self.checkProject.currentIndexChanged.connect(load_cmd)
+        self.checkCmd.editingFinished.connect(
+            lambda: self.checkProject.currentData() and review.set_check_command(
+                db, self.checkProject.currentData(), self.checkCmd.text()))
+        load_cmd()
+        trow.addWidget(self.checkProject)
+        trow.addWidget(self.checkCmd, 1)
+        fol.addLayout(trow)
         fol.addLayout(self._keyed_row(fo, "Session summaries", "Written when a chat goes idle; used to find chats "
                                       "to reuse. Cheap model = the last enabled model in the list above.",
                                       "summaries.mode", MODES, "model"))

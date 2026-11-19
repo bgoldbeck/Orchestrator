@@ -80,7 +80,8 @@ def build_server():
     @server.tool()
     async def delegate(instructions: str, engine: str = "", model: str = "", effort: str = "",
                        title: str = "", cwd: str = "", resume_session_id: str = "", reason: str = "",
-                       project: str = "") -> str:
+                       project: str = "", after: list[int] | None = None, done_when: list[str] | None = None,
+                       files: list[str] | None = None) -> str:
         """Start a sub-agent on a task. Returns a task_id right away; the task runs in the background.
 
         instructions: everything the sub-agent needs; it does not see this conversation.
@@ -93,11 +94,18 @@ def build_server():
         reason: one line on why this engine/model/effort (shown on the task card).
         project: optional project name (see find_projects) when this task belongs in another project folder;
           empty = this orchestration's project. `cwd` is then relative to that project.
+        after: task ids that must finish (done) first; the task waits in the queue until then. If one of them
+          fails, the user decides whether it runs anyway.
+        done_when: 1-10 short, checkable criteria ("tests in tests/test_login.py pass"). They are fixed once the
+          task starts and the report marks each one met or not met.
+        files: paths this task will change, when known. Two tasks that share a file never run at the same time
+          (unless each gets its own git worktree).
         """
         return _dump(await bridge_call("delegate", {
             "instructions": instructions, "engine": engine, "model": model, "effort": effort,
             "title": title, "cwd": cwd, "resume_session_id": resume_session_id, "reason": reason,
-            "project": project}, timeout=60))
+            "project": project, "after": list(after or []), "done_when": list(done_when or []),
+            "files": list(files or [])}, timeout=60))
 
     @server.tool()
     async def suggest_preference(task_type: str, model: str, engine: str = "", effort: str = "",
@@ -113,16 +121,19 @@ def build_server():
             "keywords": keywords or [], "notes": notes}, timeout=30))
 
     @server.tool()
-    async def ask_user(question: str, options: list[str] | None = None, question_id: int = 0) -> str:
+    async def ask_user(question: str, options: list[str] | None = None, question_id: int = 0,
+                       recommended: str = "") -> str:
         """Ask the user a question in the app and wait for the answer.
 
         options: optional short choices shown as buttons (the user can also type an answer).
+        recommended: the option you recommend; it is shown first, as the main button, in Waiting on you.
         One call waits a few minutes at most. If there is no answer yet it returns "answered": false and a
         question_id; call ask_user again with that question_id (question can be repeated) to keep waiting.
         """
         limit = wait_limit()
         res = await bridge_call("ask", {"question": question, "options": list(options or []),
-                                        "question_id": question_id, "timeout": limit}, timeout=limit + 30)
+                                        "question_id": question_id, "timeout": limit,
+                                        "recommended": recommended}, timeout=limit + 30)
         if not res.get("answered"):
             res["note"] = "No answer yet. Call ask_user again with this question_id to keep waiting."
         return _dump(res)

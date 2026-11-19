@@ -48,8 +48,10 @@ def column_of(t: Task) -> tuple[str, str]:
         return "queue", "ready"
     if t.status == "proposed":
         return "queue", "proposed"
-    if t.status in ("running", "waiting"):
+    if t.status in ("running", "waiting", "checking"):
         return "running", t.status
+    if t.merge_state in ("review", "conflict"):  # waiting for Merge / Discard
+        return "review", t.status
     if t.status in ("done", "failed") and not t.reviewed_at:
         return "review", t.status
     return "done", t.status
