@@ -87,6 +87,7 @@ MIGRATIONS = [
     ("orchestrations", "project_reason", "TEXT"),  # why Auto picked this project
     ("schedules", "target", "TEXT NOT NULL DEFAULT 'chat'"),  # chat | orchestration
     ("schedules", "options_json", "TEXT"),  # orchestration: {"max_parallel": n, "auto_planner": bool}
+    ("tasks", "reviewed_at", "REAL"),  # Board: a finished task moves from Review to Done when the user marks it
 ]
 
 
@@ -209,6 +210,7 @@ class Task:
     escalated: bool = False
     proposal: dict | None = None
     queue_pos: float | None = None
+    reviewed_at: float | None = None
 
 
 @dataclass
@@ -232,6 +234,9 @@ class Database:
             cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                if col == "reviewed_at":  # tasks finished before the Board existed count as reviewed
+                    self.conn.execute("UPDATE tasks SET reviewed_at=COALESCE(finished_at, created_at) "
+                                      "WHERE status IN ('done','failed','stopped')")
         self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_sessions_engine_id ON sessions(engine, engine_session_id)"
                           " WHERE engine_session_id IS NOT NULL")
         if not self.conn.execute("SELECT 1 FROM models LIMIT 1").fetchone():
@@ -512,7 +517,8 @@ class Database:
                     json.loads(r["result_json"]) if r["result_json"] else None,
                     r["created_at"], r["started_at"], r["finished_at"], r["pick_reason"], bool(r["auto_picked"]),
                     bool(r["reused"]), bool(r["escalated"]),
-                    json.loads(r["proposal_json"]) if r["proposal_json"] else None, r["queue_pos"])
+                    json.loads(r["proposal_json"]) if r["proposal_json"] else None, r["queue_pos"],
+                    r["reviewed_at"])
 
     def add_task(self, oid: int, engine: str, model: str, effort: str, title: str, instructions: str,
                  cwd: str | None = None) -> Task:
@@ -528,6 +534,15 @@ class Database:
 
     def tasks(self, oid: int) -> list[Task]:
         return [self._task(r) for r in self.conn.execute("SELECT * FROM tasks WHERE orchestration_id=? ORDER BY id", (oid,))]
+
+    def board_tasks(self, finished_limit: int = 40) -> list[tuple[Task, int]]:
+        """(task, project id) for the Board: every unfinished task plus the most recent finished ones."""
+        q = ("SELECT t.*, o.project_id AS pid FROM tasks t JOIN orchestrations o ON o.id=t.orchestration_id "
+             "WHERE t.status NOT IN ('done','failed','stopped') OR t.reviewed_at IS NULL AND t.status IN ('done','failed') "
+             "UNION SELECT * FROM (SELECT t.*, o.project_id AS pid FROM tasks t JOIN orchestrations o "
+             "ON o.id=t.orchestration_id WHERE t.status IN ('done','failed','stopped') "
+             "ORDER BY COALESCE(t.finished_at, t.created_at) DESC LIMIT ?)")
+        return [(self._task(r), r["pid"]) for r in self.conn.execute(q, (finished_limit,))]
 
     def queued_tasks(self) -> list[Task]:
         """Every queued task of a running orchestration, in global queue order (what starts next first)."""

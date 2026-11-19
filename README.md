@@ -141,6 +141,18 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   (`Orchestrator.exe --mcp-server`), so the built app needs no Python. Codex still comes from your own
   `codex` install on PATH.
 
+## Board
+
+![Board](docs/screenshots/board-light.png)
+
+- **Board** (sidebar) shows every orchestration task from every project in four columns: **In queue** (Ready now,
+  Needs your OK), **Running** (tasks waiting on you first), **Review** and **Done**.
+- The **Agents X of Y** badge shows agents running now out of the app-wide limit.
+- Cards show a project color stripe, task id (T-12), project, engine, time, model and effort, and a status chip.
+  Click a card to open its chat; right-click for Run sooner/later, Stop, Run again and Back to Review.
+- Finished tasks wait in **Review** until you press **Looks good** (or the check next to the column title for all
+  successful ones). Failed tasks stay there with **Retry**. Filter by project at the top right.
+
 ## Schedules: readable buttons, easy times
 
 ![Run once](docs/screenshots/schedules-custom.png)

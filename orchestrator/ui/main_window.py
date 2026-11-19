@@ -108,6 +108,7 @@ class MainWindow(FluentWindow):
         self.projects.set_loading(indexer is not None)
         self.chats = LazyPage("chatsPage", lambda p: ChatsPage(db, mgr, p), self._chats_built, self)
         self.orchestrate = LazyPage("orchestratePage", self._make_orchestrate, self._orchestrate_built, self)
+        self.board = LazyPage("boardPage", self._make_board, self._board_built, self)
         self.schedules = (LazyPage("schedulesPage", self._make_schedules, self._schedules_built, self)
                           if runner is not None else None)
         self.settings = LazyPage("settingsPage", self._make_settings, self._settings_built, self)
@@ -117,6 +118,7 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.projects, FIF.HOME, "Projects")
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
         self.addSubInterface(self.orchestrate, FIF.ROBOT, "Orchestrate")
+        self.addSubInterface(self.board, FIF.TILES, "Board")
         if self.schedules is not None:
             self.addSubInterface(self.schedules, FIF.DATE_TIME, "Schedules")
         self.addSubInterface(self.usage, FIF.SPEED_HIGH, "Usage", NavigationItemPosition.BOTTOM)
@@ -311,6 +313,14 @@ class MainWindow(FluentWindow):
         page.runner = self.runner
         page.projectsChanged.connect(self._reload_sidebar)
         page.projectsChanged.connect(self._refresh_projects_if_visible)
+
+    def _make_board(self, parent):
+        from orchestrator.ui.board_page import BoardPage
+
+        return BoardPage(self.db, self._ensure_om(), parent)
+
+    def _board_built(self, page) -> None:
+        page.openChat.connect(self.open_session)
 
     def _make_schedules(self, parent):
         from orchestrator.ui.schedules_page import SchedulesPage

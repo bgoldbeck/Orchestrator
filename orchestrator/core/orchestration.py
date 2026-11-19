@@ -693,7 +693,7 @@ class OrchestrationManager(QObject):
         s = self.db.session(sid)
         if s and s.title != t.title:
             self.db.update_session(sid, title=t.title)
-        self.db.update_task(t.id, status="running", started_at=time.time(), finished_at=None)
+        self.db.update_task(t.id, status="running", started_at=time.time(), finished_at=None, reviewed_at=None)
         self.task_changed.emit(t.orchestration_id, t.id)
         return True
 
