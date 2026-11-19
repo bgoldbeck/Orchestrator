@@ -170,6 +170,10 @@ def test_title_text_cleanup():
     assert title_text("C:\\Users\\b\\Arcanium\nread player.log") == "read player.log"
     assert title_text("see &#34;build failed&#34;") == 'see "build failed"'
     assert title_text("D:\\Games\\shot.png") == "File: shot.png"
+    from orchestrator.core.harness_text import clean
+
+    assert clean('<wake reason="m"><message>why is my patch server down? <attachment kind="image" '
+                 'path="a.png"/></message></wake>') == "why is my patch server down?"
 
 
 def test_reuse_card_question_box_and_auto_planner(env, qapp):

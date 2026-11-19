@@ -16,6 +16,7 @@ DROP_TAGS = (
     "command-contents", "local-command-stdout", "local-command-stderr", "local-command-caveat",
     "user-prompt-submit-hook", "task-notification", "environment_context", "user_instructions",
     "permissions", "turn_aborted", "relay", "ide_selection", "ide_opened_file", "ide_diagnostics",
+    "attachment", "attachments", "untrusted-uploads",
 )
 # Envelopes whose <message> children are the person's words; everything else in them is dropped.
 ENVELOPES = ("wake",)

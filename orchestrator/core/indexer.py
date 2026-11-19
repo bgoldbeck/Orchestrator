@@ -26,7 +26,7 @@ NOISE_PREFIXES = ("<command-", "<local-command", "<system-reminder", "<environme
                   "<permissions", "Caveat:", "<ide_", "[Request interrupted")
 
 
-PARSER_VERSION = 2  # bump to re-parse every file once (titles derived differently)
+PARSER_VERSION = 3  # bump to re-parse every file once (titles derived differently)
 _UPLOAD_REF = re.compile(r'^\s*@(?:"[^"]*"|\S+)\s*')
 _PATH_LINE = re.compile(r'^\s*"?(?:[A-Za-z]:[\\/]|\\\\|/|~[\\/])[^\n]*$')
 APP_MARKERS = ("<wake", "<relay", "&lt;wake", "&lt;relay")
