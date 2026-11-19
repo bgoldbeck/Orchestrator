@@ -189,12 +189,20 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 
 ## Orchestrate workspace
 
+![Project home](docs/screenshots/orch-home.png)
 ![Orchestrate workspace](docs/screenshots/orch-workspace.png)
 
-- While a run is open, the **planner chat stays on the left** and you keep talking to it. Nothing jumps to Chats.
-- The right pane lists the run's tasks as **Waiting on you**, **Working**, **Queued** and **Done**, one line of
-  status each. Click a task to open its chat in that pane (× goes back). **Details** has the full run page
-  (models, queue order, questions, Stop all, history); **+** starts a new goal.
+- The **project picker** is always at the top left: switch projects, pick **Auto** (chosen from the goal) or add a
+  folder. A project opens on its **home**: the goal box and the project's runs (running, needs you, done).
+  **Run settings** holds how many tasks run at once and git worktrees.
+- Inside a run the header reads **project › run**; click the run name to switch runs, **Stop all** and **New goal**
+  sit on the right.
+- The **planner chat stays on the left** and you keep talking to it. Nothing jumps to Chats.
+- The right pane lists the run's tasks. **Needs you** comes first with the buttons right there (answer a question,
+  start a proposed task, merge a review); then **Working**, **Queued** and **Done**. Click a task to open its chat in
+  that pane (× goes back); right-click for Show changes, Stop, Retry or queue order.
+- Planner and sub-agent chats show your goal or the task, not the whole prompt Orchestrator sends; the
+  **Show orchestrator instructions** chip expands it.
 - Clicking an orchestration task on the Board opens it here too, next to its planner.
 
 ## Attach files and images

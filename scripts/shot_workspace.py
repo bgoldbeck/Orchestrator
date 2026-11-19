@@ -2,6 +2,7 @@
 
     .venv\\Scripts\\python scripts\\shot_workspace.py board  -> docs/screenshots/orch-workspace.png
     .venv\\Scripts\\python scripts\\shot_workspace.py agent  -> docs/screenshots/orch-workspace-agent.png
+    .venv\\Scripts\\python scripts\\shot_workspace.py home   -> docs/screenshots/orch-home.png
 """
 from __future__ import annotations
 
@@ -18,7 +19,8 @@ sys.path.insert(0, str(ROOT))
 
 def main() -> int:
     which = sys.argv[1] if len(sys.argv) > 1 else "board"
-    out = ROOT / "docs" / "screenshots" / ("orch-workspace.png" if which == "board" else "orch-workspace-agent.png")
+    out = ROOT / "docs" / "screenshots" / {"board": "orch-workspace.png", "agent": "orch-workspace-agent.png",
+                                           "home": "orch-home.png"}[which]
     home = Path(tempfile.mkdtemp(prefix="orch-shot-"))
     os.environ["ORCHESTRATOR_HOME"] = str(home)
     os.environ["ORCHESTRATOR_INDEX_CLAUDE"] = str(home / "none")
@@ -68,6 +70,15 @@ def main() -> int:
             db.add_message(s.id, "assistant", "text", {"text": "Added `forecast()` in `api/routes.py` with a `days` "
                            "parameter (1 to 14, default 7); above 14 returns 400."})
         db.update_task(t.id, session_id=s.id, status=status, started_at=now - st if st else None, queue_pos=now + i)
+    for goal2, st2, ago in (("Fix flaky radar tile cache", "running", 3600), ("Upgrade to Python 3.13", "done", 86400)):
+        o2 = db.add_orchestration(proj.id, goal2, "claude", "claude-opus-5-5", "medium", 2)
+        db.update_orchestration(o2.id, status=st2, created_at=now - ago, finished_at=now - ago + 900)
+        if st2 == "running":
+            db.add_question(o2.id, "Clear the cache on deploy, or only on version change?", ["On deploy", "On version change"])
+        for k in range(4 if st2 == "done" else 0):
+            t2 = db.add_task(o2.id, "claude", "claude-sonnet-5-5", "low", f"step {k}", f"step {k}", proj.path)
+            db.update_task(t2.id, status="done")
+    db.add_project(r"D:\Games\sparkfall", "sparkfall")
     db.set_setting("orchestrate.project", proj.id)
     win = MainWindow(db, SessionManager(db), _app_icon())
     win.setMicaEffectEnabled(False)
@@ -78,7 +89,8 @@ def main() -> int:
         win.switchTo(win.orchestrate)
         ws = win.orchestrate.ensure()
         ws.reload()
-        ws.history.setCurrentIndex(max(0, ws.history.findData(o.id)))
+        if which != "home":
+            ws.history.setCurrentIndex(max(0, ws.history.findData(o.id)))
         if which == "agent":
             win.open_task_chat(agent)
         QTimer.singleShot(700, lambda: (win.grab().save(str(out)), print("screenshot:", out), app.quit()))

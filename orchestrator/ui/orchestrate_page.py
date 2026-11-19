@@ -321,6 +321,59 @@ class TaskCard(QFrame):
         self.approval.hide()
 
 
+RUN_COLORS = {"running": STATUS_COLORS["running"], "needs you": STATUS_COLORS["waiting"],
+              "done": STATUS_COLORS["done"], "failed": STATUS_COLORS["error"], "stopped": STATUS_COLORS["idle"]}
+RUN_GLYPHS = {"running": "◐", "needs you": "!", "done": "✓", "failed": "✕", "stopped": "–"}
+
+
+def run_pill(state: str, parent: QWidget, extra: str = "") -> QLabel:
+    col = RUN_COLORS.get(state, palette()["muted"])
+    lb = QLabel(state + (f" · {extra}" if extra else ""), parent)
+    lb.setObjectName("runPill")
+    lb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    lb.setFixedHeight(22)
+    lb.setStyleSheet(f"QLabel#runPill {{ color:{col}; border:1px solid {col}; border-radius:9px; padding:0 8px;"
+                     f" font-size:8.5pt; background:transparent; }}")
+    return lb
+
+
+class RunCard(QFrame):
+    """One run on a project's home: goal, what its tasks are doing, state."""
+    clicked = Signal(int)
+
+    def __init__(self, o: Orchestration, state: str, line: str, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.oid = o.id
+        p = palette()
+        self.setObjectName("runCard")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(f"#runCard {{ background:{p['card']}; border:1px solid {p['border']}; border-radius:10px; }}"
+                           f" #runCard:hover {{ background:{p['card_hover']}; }}")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(12)
+        g = QLabel(RUN_GLYPHS.get(state, "•"), self)
+        g.setFixedWidth(14)
+        g.setStyleSheet(f"color:{RUN_COLORS.get(state, p['muted'])}; font-weight:700; background:transparent;")
+        lay.addWidget(g)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        goal = " ".join(o.goal.split())
+        t = StrongBodyLabel(goal[:110] + ("…" if len(goal) > 110 else ""), self)
+        t.setWordWrap(True)
+        col.addWidget(t)
+        sub = CaptionLabel(line, self)
+        sub.setStyleSheet(f"color:{p['muted']};")
+        col.addWidget(sub)
+        lay.addLayout(col, 1)
+        lay.addWidget(run_pill(state, self), 0, Qt.AlignVCenter)
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit(self.oid)
+        super().mouseReleaseEvent(e)
+
+
 class PickSessionDialog(MessageBoxBase):
     """Pick another earlier chat to continue (candidates from find_sessions)."""
 
@@ -359,6 +412,7 @@ class OrchestratePage(SmoothScrollArea):
     openChat = Signal(int)
     projectsChanged = Signal()
     runChanged = Signal(object)  # orchestration id shown, or None (new goal)
+    shown = Signal()  # project or run shown changed (header refresh)
 
     def __init__(self, db: Database, mgr: SessionManager, om: OrchestrationManager, parent: QWidget | None = None):
         super().__init__(parent)
@@ -387,36 +441,31 @@ class OrchestratePage(SmoothScrollArea):
         lay.setSpacing(14)
         p = palette()
 
-        head = QHBoxLayout()
-        tcol = QVBoxLayout()
-        tcol.setSpacing(2)
-        title = QLabel("Orchestrate", self.column)
+        # The project picker and run switcher live in the workspace header; these combos stay as the model
+        # behind them (and for tests), hidden.
+        self.project = ComboBox(self.column)
+        self.project.currentIndexChanged.connect(self._project_changed)
+        self.project.hide()
+        self.history = ComboBox(self.column)
+        self.history.currentIndexChanged.connect(self._history_changed)
+        self.history.hide()
+        self.newRun = PushButton(FIF.ADD, "New orchestration", self.column)
+        self.newRun.clicked.connect(lambda: self.history.setCurrentIndex(0))
+        self.newRun.hide()
+        self.heading = QLabel("What should get done?", self.column)
+        self.heading.setObjectName("orchHeading")
         f = QFont("Georgia")
         f.setStyleHint(QFont.Serif)
-        f.setPointSize(26)
-        title.setFont(f)
-        title.setStyleSheet(f"color:{p['text']}; background:transparent;")
-        tcol.addWidget(title)
-        explain = CaptionLabel("An orchestration is one goal: a planner splits it into tasks and hands them to "
-                               "Claude or Codex sub-agents, then reports back.", self.column)
-        explain.setWordWrap(True)
-        explain.setStyleSheet(f"color:{p['muted']};")
-        head.addLayout(tcol)
-        head.addStretch(1)
-        self.project = ComboBox(self.column)
-        self.project.setMinimumWidth(200)
-        self.project.currentIndexChanged.connect(self._project_changed)
-        head.addWidget(self.project)
-        self.history = ComboBox(self.column)
-        self.history.setMinimumWidth(260)
-        self.history.currentIndexChanged.connect(self._history_changed)
-        head.addWidget(self.history)
-        self.newRun = PushButton(FIF.ADD, "New orchestration", self.column)
-        self.newRun.setToolTip("Start another goal (this one keeps running)")
-        self.newRun.clicked.connect(lambda: self.history.setCurrentIndex(0))
-        head.addWidget(self.newRun)
-        lay.addLayout(head)
-        lay.addWidget(explain)
+        f.setPointSize(24)
+        self.heading.setFont(f)
+        self.heading.setWordWrap(True)
+        self.heading.setStyleSheet(f"color:{p['text']}; background:transparent;")
+        lay.addWidget(self.heading)
+        self.explain = CaptionLabel("A planner splits the goal into tasks and runs Claude or Codex agents in this "
+                                    "folder, then reports back.", self.column)
+        self.explain.setWordWrap(True)
+        self.explain.setStyleSheet(f"color:{p['muted']};")
+        lay.addWidget(self.explain)
 
         # no projects yet: explain what a project is, with the button right here
         self.noProjects = QFrame(self.column)
@@ -449,8 +498,7 @@ class OrchestratePage(SmoothScrollArea):
         cl.setContentsMargins(16, 14, 16, 12)
         cl.setSpacing(10)
         self.goal = PlainTextEdit(self.composer)
-        self.goal.setPlaceholderText("What should get done? The planner splits it into tasks and runs sub-agents "
-                                     "(Claude or Codex) in this project, then reports back.")
+        self.goal.setPlaceholderText("Describe the goal…")
         self.goal.setFixedHeight(96)
         cl.addWidget(self.goal)
         row = QHBoxLayout()
@@ -464,23 +512,6 @@ class OrchestratePage(SmoothScrollArea):
         self.autoPlanner.setChecked(bool(db.get_setting("orchestrate.auto_planner", False)))
         self.autoPlanner.toggled.connect(self._auto_toggled)
         row.addWidget(self.autoPlanner)
-        row.addSpacing(8)
-        row.addWidget(BodyLabel("Run up to", self.composer))
-        self.maxPar = NumberBox(self.composer)
-        self.maxPar.setObjectName("maxParallel")
-        self.maxPar.setToolTip("How many of this goal's tasks may run at the same time. The rest wait in a queue. "
-                               "The whole app also has a limit (Settings › Orchestrator).")
-        self.maxPar.setRange(1, 8)
-        self.maxPar.setValue(int(db.get_setting("orchestrate.max_parallel", 4)))
-        self.maxPar.valueChanged.connect(lambda v: db.set_setting("orchestrate.max_parallel", int(v)))
-        row.addWidget(self.maxPar)
-        row.addWidget(BodyLabel("tasks at once", self.composer))
-        self.worktrees = CheckBox("Git worktree per task", self.composer)
-        self.worktrees.setToolTip("When two sub-agents write in the same git repo at once, give each its own "
-                                  "worktree and branch (orchestrator/task-N). Off by default.")
-        self.worktrees.setChecked(bool(db.get_setting("orchestrate.worktrees", False)))
-        self.worktrees.toggled.connect(lambda v: db.set_setting("orchestrate.worktrees", bool(v)))
-        row.addWidget(self.worktrees)
         row.addStretch(1)
         cl.addLayout(row)
         row = QHBoxLayout()
@@ -533,6 +564,29 @@ class OrchestratePage(SmoothScrollArea):
         self.composerError.hide()
         cl.addWidget(self.composerError)
         lay.addWidget(self.composer)
+
+        # run settings (shown in a flyout from the header): kept here as the model
+        self.maxPar = NumberBox(self.composer)
+        self.maxPar.setObjectName("maxParallelModel")
+        self.maxPar.setRange(1, 8)
+        self.maxPar.setValue(int(db.get_setting("orchestrate.max_parallel", 4)))
+        self.maxPar.valueChanged.connect(lambda v: db.set_setting("orchestrate.max_parallel", int(v)))
+        self.maxPar.hide()
+        self.worktrees = CheckBox("Git worktree per task", self.composer)
+        self.worktrees.setToolTip("When two sub-agents write in the same git repo at once, give each its own "
+                                  "worktree and branch (orchestrator/task-N). Off by default.")
+        self.worktrees.setChecked(bool(db.get_setting("orchestrate.worktrees", False)))
+        self.worktrees.toggled.connect(lambda v: db.set_setting("orchestrate.worktrees", bool(v)))
+        self.worktrees.hide()
+
+        # this project's runs (the project home)
+        self.runsHead = StrongBodyLabel("Runs in this project", self.column)
+        lay.addWidget(self.runsHead)
+        self.runsBox = QWidget(self.column)
+        self.runsLay = QVBoxLayout(self.runsBox)
+        self.runsLay.setContentsMargins(0, 0, 0, 0)
+        self.runsLay.setSpacing(8)
+        lay.addWidget(self.runsBox)
 
         # planner strip
         self.planner = QFrame(self.column)
@@ -627,8 +681,6 @@ class OrchestratePage(SmoothScrollArea):
             self.project.addItem(pr.name, userData=pr.id)
         has = bool(mine)
         self.noProjects.setVisible(not has)
-        for w in (self.project, self.history):
-            w.setVisible(has)
         want = cur or self.db.get_setting("orchestrate.project", "auto")
         self.project.setCurrentIndex(max(0, self.project.findData(want)))
         self.project.blockSignals(False)
@@ -650,7 +702,7 @@ class OrchestratePage(SmoothScrollArea):
         for o in runs:
             g = " ".join(o.goal.split())
             self.history.addItem(f"{g[:38] + '…' if len(g) > 38 else g}  ·  {relative(o.created_at)}", userData=o.id)
-        keep = self.current if self.current in [o.id for o in runs] else (runs[0].id if runs else None)
+        keep = self.current if self.current in [o.id for o in runs] else None  # else the project's home
         self.history.setCurrentIndex(max(0, self.history.findData(keep)) if keep else 0)
         self.history.blockSignals(False)
         self.show_run(keep)
@@ -662,11 +714,113 @@ class OrchestratePage(SmoothScrollArea):
         self.current = oid
         has = self.project.currentData() is not None
         self.composer.setVisible(oid is None and has)
-        self.newRun.setVisible(oid is not None and has)
+        self._render_home()
         self.composerError.hide()
         self.askProject.hide()
         self._update_where()
         self.render_board()
+        self.shown.emit()
+
+    # ---- project home
+    def project_name(self) -> str:
+        pid = self.project.currentData()
+        pr = self.db.project(pid) if isinstance(pid, int) else None
+        return pr.name if pr else ""
+
+    def run_state(self, o: Orchestration) -> str:
+        """running | needs you | done | failed | stopped, for the runs list and the header pill."""
+        if self.db.open_questions(o.id) or any(t.status in ("waiting", "proposed") or t.merge_state in
+                                                ("review", "conflict") for t in self.db.tasks(o.id)):
+            return "needs you"
+        if self.om.is_active(o.id) or (o.session_id and self.mgr.is_running(o.session_id)):
+            return "running"
+        return {"error": "failed"}.get(o.status, o.status if o.status != "running" else "done")
+
+    def run_line(self, o: Orchestration) -> str:
+        tasks = self.db.tasks(o.id)
+        n = {k: sum(1 for t in tasks if t.status in v) for k, v in
+             (("working", ("running", "waiting")), ("queued", ("queued", "proposed")), ("done", ("done",)),
+              ("failed", ("failed",)))}
+        bits = [f"{v} {k}" for k, v in n.items() if v]
+        q = len(self.db.open_questions(o.id))
+        if q:
+            bits.insert(0, f"{q} question{'s' if q != 1 else ''} for you")
+        pr = self.db.project(o.project_id) if self.project.currentData() == "auto" else None
+        return "  ·  ".join(([pr.name] if pr else []) + (bits or ["no tasks yet"]) + [f"started {relative(o.created_at)}"])
+
+    def _render_home(self) -> None:
+        name = self.project_name()
+        self.heading.setText(f"What should get done in {name}?" if name else "What should get done?")
+        home = self.current is None and self.project.currentData() is not None
+        for w in (self.heading, self.explain):
+            w.setVisible(home)
+        while self.runsLay.count():
+            w = self.runsLay.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        pid = self.project.currentData()
+        runs = self.db.orchestrations(None if pid == "auto" else pid)[:30] if pid and home else []
+        runs.sort(key=lambda o: -(o.created_at or 0))
+        self.runsHead.setText("Recent runs" if pid == "auto" else "Runs in this project")
+        self.runsHead.setVisible(bool(runs))
+        self.runsBox.setVisible(bool(runs))
+        for o in runs:
+            card = RunCard(o, self.run_state(o), self.run_line(o), self.runsBox)
+            card.clicked.connect(self.open_run)
+            self.runsLay.addWidget(card)
+
+    def open_run(self, oid: int) -> None:
+        o = self.db.orchestration(oid)
+        if not o:
+            return
+        if self.project.currentData() not in ("auto", o.project_id):
+            self.project.blockSignals(True)
+            self.project.setCurrentIndex(max(0, self.project.findData(o.project_id)))
+            self.project.blockSignals(False)
+        self.current = oid
+        self._project_changed()
+
+    def set_project(self, pid) -> None:
+        """Header picker: go to that project's home."""
+        self.current = None
+        i = self.project.findData(pid)
+        if i == self.project.currentIndex():
+            self._project_changed()
+        else:
+            self.project.setCurrentIndex(max(0, i))
+
+    def settings_flyout(self, target: QWidget) -> None:
+        """Run settings: how many tasks at once, and git worktrees."""
+        from qfluentwidgets import Flyout, FlyoutViewBase
+
+        view = FlyoutViewBase()
+        vl = QVBoxLayout(view)
+        vl.setContentsMargins(16, 14, 16, 14)
+        vl.setSpacing(10)
+        vl.addWidget(StrongBodyLabel("Run settings", view))
+        row = QHBoxLayout()
+        row.addWidget(BodyLabel("Run up to", view))
+        box = NumberBox(view)
+        box.setObjectName("maxParallel")
+        box.setRange(1, 8)
+        box.setValue(self.maxPar.value())
+        box.valueChanged.connect(self.maxPar.setValue)
+        row.addWidget(box)
+        row.addWidget(BodyLabel("tasks at once", view))
+        row.addStretch(1)
+        vl.addLayout(row)
+        tip = CaptionLabel("The rest wait in a queue. The whole app also has a limit (Settings › Orchestrator).", view)
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{palette()['muted']};")
+        vl.addWidget(tip)
+        wt = CheckBox("Git worktree per task", view)
+        wt.setToolTip(self.worktrees.toolTip())
+        wt.setChecked(self.worktrees.isChecked())
+        wt.toggled.connect(self.worktrees.setChecked)
+        vl.addWidget(wt)
+        view.setMinimumWidth(320)
+        Flyout.make(view, target, self.window())
 
     # ---- projects
     def add_project(self) -> None:

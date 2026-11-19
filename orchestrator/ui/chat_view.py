@@ -401,6 +401,7 @@ class ChatView(QWidget):
         hl.setContentsMargins(24, 8, 16, 8)
         tl = QVBoxLayout()
         tl.setSpacing(0)
+        self.fixed_title = ""  # e.g. "Planner" in the Orchestrate workspace, whose header already names the run
         self.title = SubtitleLabel("", self.header)
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.path = CaptionLabel("", self.header)
@@ -641,7 +642,7 @@ class ChatView(QWidget):
                                       "Add project folder")
             return
         proj = self.db.project(s.project_id)
-        self.title.setText(s.title)
+        self.title.setText(self.fixed_title or s.title)
         self.pairBtn.setVisible(bool(self.related_chats()))
         where = s.cwd or (proj.path if proj else "")
         self.path.setText(where + ("   ·   imported from engine history" if s.source == "imported" else ""))
@@ -857,7 +858,7 @@ class ChatView(QWidget):
         if self.session and sid == self.session.id:
             self.session = self.db.session(sid)
             if self.session:
-                self.title.setText(self.session.title)
+                self.title.setText(self.fixed_title or self.session.title)
 
     # ---- live events
     def _show_dots(self) -> None:

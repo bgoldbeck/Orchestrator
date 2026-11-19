@@ -51,8 +51,12 @@ def test_planner_stays_and_task_opens_in_pane(win):
     ws.history.setCurrentIndex(ws.history.findData(o.id))
     assert not ws.planner.isHidden() and ws.planner.session.id == ps.id
     assert ws.stack.currentWidget() is ws.tasks
+    from orchestrator.ui.inbox_page import InboxCard
+
     rows = ws.tasks.findChildren(TaskRow)
-    assert len(rows) == 3  # Done is collapsed by default
+    assert len(rows) == 2  # working + queued; Done is collapsed by default
+    cards = ws.tasks.findChildren(InboxCard)  # the waiting task is a Needs you card with its buttons
+    assert [c.item.task_id for c in cards] == [tids["waiting"][0]]
     assert [group_of(db.task(tid)) for tid, _ in tids.values()] == ["working", "queued", "waiting", "done"]
     ws.open_task(tids["running"][0])
     assert ws.stack.currentWidget() is ws.agent and ws.agent.session.id == tids["running"][1]
@@ -77,4 +81,24 @@ def test_new_goal_hides_planner(win):
     ws = w.orchestrate.ensure()
     ws.history.setCurrentIndex(ws.history.findData(o.id))
     ws.new_goal()
-    assert ws.planner.isHidden() and ws.stack.currentWidget() is ws.page and ws.page.composer.isVisibleTo(ws.page)
+    assert ws.body.currentWidget() is ws.page and ws.page.composer.isVisibleTo(ws.page)
+    assert ws.runBtn.isHidden() and not ws.settingsBtn.isHidden()
+
+
+def test_header_project_and_run(win):
+    from orchestrator.ui.orchestrate_page import RunCard
+
+    w, db, o, ps, tids = win
+    w.switchTo(w.orchestrate)
+    ws = w.orchestrate.ensure()
+    ws.page.set_project(o.project_id)
+    assert ws.page.current is None and ws.body.currentWidget() is ws.page  # switching project shows its home
+    assert ws.projectBtn.name.text() == "proj" and "proj" in ws.page.heading.text()
+    cards = ws.page.findChildren(RunCard)
+    assert [c.oid for c in cards] == [o.id]
+    cards[0].clicked.emit(o.id)
+    assert ws.page.current == o.id and ws.body.currentWidget() is ws.split
+    assert not ws.runBtn.isHidden() and ws.runBtn.text().startswith("goal")
+    assert "Tasks · 4" == ws.sideTitle.text()
+    menu = ws.tasks.task_menu(tids["done"][0])
+    assert "Retry" in [a.text() for a in menu.actions()]
