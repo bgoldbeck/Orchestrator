@@ -350,6 +350,10 @@ class SettingsPage(SmoothScrollArea):
                                      "codex.sandbox", ["read-only", "workspace-write", "danger-full-access"], "workspace-write"))
         fl.addLayout(self._combo_row(f, "Claude permissions", "default asks inline before tools run.",
                                      "claude.permission_mode", ["default", "acceptEdits", "plan", "bypassPermissions"], "default"))
+        fl.addLayout(self._switch_row(f, "Lean mode for Claude chats",
+                                      "Skip your own plugins, skills, hooks and ~/.claude/CLAUDE.md so each prompt "
+                                      "is smaller. The project's CLAUDE.md still loads. Each chat can override this.",
+                                      "claude.lean_default", False))
         lay.addWidget(f)
 
         lay.addSpacing(6)

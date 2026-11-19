@@ -14,6 +14,7 @@ from typing import Any
 
 from orchestrator.core import auth
 from orchestrator.core.events import (
+    ContextInfo,
     Done,
     Error,
     Event,
@@ -71,6 +72,7 @@ class ClaudeMapState:
     session_id: str | None = None
     started: bool = False
     tool_names: dict[str, str] = field(default_factory=dict)
+    init: dict[str, Any] = field(default_factory=dict)  # the init frame: plugins, skills, MCP servers
 
 
 def map_claude_message(msg: Any, st: ClaudeMapState) -> list[Event]:
@@ -96,6 +98,8 @@ def map_claude_message(msg: Any, st: ClaudeMapState) -> list[Event]:
 
     if isinstance(msg, SystemMessage):
         ensure_started(msg.data.get("session_id"))
+        if msg.subtype == "init":
+            st.init = dict(msg.data)
     elif isinstance(msg, StreamEvent):
         ensure_started(msg.session_id)
         if msg.parent_tool_use_id:  # sub-agent chatter: skip in M1
@@ -149,6 +153,35 @@ def map_claude_message(msg: Any, st: ClaudeMapState) -> list[Event]:
 
 def _child_env(token_env: dict[str, str]) -> dict[str, str]:
     return dict(token_env)
+
+
+def summarize_context(usage: dict | None, init: dict | None, lean: bool = False) -> dict[str, Any]:
+    """Compact, storable form of get_context_usage() plus the init frame (pure, testable)."""
+    usage, init = usage or {}, init or {}
+    cats = [{"name": str(c.get("name", "")), "tokens": int(c.get("tokens") or 0),
+             "deferred": bool(c.get("isDeferred"))} for c in usage.get("categories") or []]
+    servers: dict[str, dict[str, Any]] = {}
+    for t in usage.get("mcpTools") or []:
+        name = str(t.get("serverName") or "?")
+        d = servers.setdefault(name, {"server": name, "tools": 0, "tokens": 0, "status": ""})
+        d["tools"] += 1
+        d["tokens"] += int(t.get("tokens") or 0)
+    for srv in init.get("mcp_servers") or []:
+        name = str(srv.get("name", "?"))
+        d = servers.setdefault(name, {"server": name, "tools": 0, "tokens": 0, "status": ""})
+        d["status"] = str(srv.get("status") or "")
+        d["source"] = str(srv.get("source") or "")
+    files = [{"path": str(f.get("path", "")), "tokens": int(f.get("tokens") or 0), "type": str(f.get("type", ""))}
+             for f in usage.get("memoryFiles") or []]
+    plugins = [str(p.get("name", p)) if isinstance(p, dict) else str(p) for p in init.get("plugins") or []]
+    skills = init.get("skills")
+    return {
+        "categories": cats, "total": int(usage.get("totalTokens") or 0), "max": int(usage.get("maxTokens") or 0),
+        "model": str(usage.get("model") or init.get("model") or ""), "memory_files": files,
+        "mcp": sorted(servers.values(), key=lambda d: -d["tokens"]), "plugins": plugins,
+        "skills": len(skills) if isinstance(skills, list) else None,
+        "tools": len(init.get("tools") or []), "lean": lean,
+    }
 
 
 def claude_mcp_options(mcp: dict[str, dict] | None) -> tuple[dict, dict[str, str], list[str]]:
@@ -217,6 +250,7 @@ class ClaudeAdapter(AgentAdapter):
             resume=req.resume_id,
             effort=req.effort if req.effort in EFFORTS else None,
             include_partial_messages=True,
+            setting_sources=["project"] if req.lean else None,  # None = SDK default (user + project)
             permission_mode=self.permission_mode,
             can_use_tool=can_use_tool,
             env={**_child_env(status.env), **extra_env},
@@ -233,6 +267,13 @@ class ClaudeAdapter(AgentAdapter):
                     async for m in client.receive_response():
                         for ev in map_claude_message(m, st):
                             b.put(ev)
+                    if not self._stopped:
+                        try:  # same data as /context; older CLIs may not answer
+                            usage = await asyncio.wait_for(client.get_context_usage(), 15)
+                        except Exception:  # noqa: BLE001
+                            usage = None
+                        if usage or st.init:
+                            b.put(ContextInfo("claude", summarize_context(usage, st.init, req.lean)))
 
             if sys.platform == "win32":
                 asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())

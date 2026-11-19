@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, Signal
 from orchestrator.core import auth
 from orchestrator.core import model_registry
 from orchestrator.core.events import (
+    ContextInfo,
     Done,
     Error,
     NeedsApproval,
@@ -120,6 +121,16 @@ class SessionManager(QObject):
         if a:
             await a.interrupt()
 
+    def lean_for(self, sid: int) -> bool:
+        """Lean mode (Claude): this chat's own choice, else the app default (Settings)."""
+        own = self.db.get_setting(f"chat.lean.{sid}", None)
+        if own is not None:
+            return bool(own)
+        return bool(self.db.get_setting("claude.lean_default", False))
+
+    def set_lean(self, sid: int, on: bool) -> None:
+        self.db.set_setting(f"chat.lean.{sid}", bool(on))
+
     def mcp_for(self, sid: int) -> dict | None:
         """Every MCP server this chat gets: orchestration tools (planner chats) plus app control (all chats)."""
         out: dict = {}
@@ -146,7 +157,7 @@ class SessionManager(QObject):
         req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
                           resume_id=s.engine_session_id,
                           sandbox=self.run_options.get(sid, {}).get("sandbox", sandbox),
-                          mcp=self.mcp_for(sid))
+                          mcp=self.mcp_for(sid), lean=self.lean_for(sid))
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"
@@ -194,6 +205,9 @@ class SessionManager(QObject):
                     if ev.engine == "claude":
                         record_claude_rate_limit(self.db, {"rate_limit_type": ev.window, "status": ev.status,
                                                            "utilization": ev.utilization, "resets_at": ev.resets_at})
+                elif isinstance(ev, ContextInfo):
+                    self.db.set_context(sid, ev.data)
+                    self.db.set_setting(f"context.last.{ev.engine}", {**ev.data, "session_id": sid})
                 elif isinstance(ev, Usage):
                     self.db.add_message(sid, "system", "usage", {
                         "input": ev.input_tokens, "output": ev.output_tokens, "cached": ev.cached_tokens, "cost": ev.cost_usd})

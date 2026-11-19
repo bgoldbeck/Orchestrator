@@ -23,6 +23,9 @@ class TurnRequest:
     # Local stdio MCP servers for this turn: name -> {"command", "args", "env", "tool_timeout_sec"}.
     # Their tools are trusted (auto-approved) on both engines.
     mcp: dict[str, dict] | None = None
+    # Claude only: skip user-level settings (plugins, skills, hooks, ~/.claude/CLAUDE.md, user MCP servers);
+    # the project's own CLAUDE.md and settings still load.
+    lean: bool = False
 
 
 class AgentAdapter(abc.ABC):

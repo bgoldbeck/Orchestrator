@@ -87,7 +87,8 @@ MIGRATIONS = [
     ("orchestrations", "project_reason", "TEXT"),  # why Auto picked this project
     ("schedules", "target", "TEXT NOT NULL DEFAULT 'chat'"),  # chat | orchestration
     ("schedules", "options_json", "TEXT"),  # orchestration: {"max_parallel": n, "auto_planner": bool}
-    ("tasks", "reviewed_at", "REAL"),  # Board: a finished task moves from Review to Done when the user marks it
+    ("tasks", "reviewed_at", "REAL"),
+    ("sessions", "context_json", "TEXT"),  # last ContextInfo: what the engine loads into every prompt  # Board: a finished task moves from Review to Done when the user marks it
 ]
 
 
@@ -338,6 +339,21 @@ class Database:
     def sessions(self, project_id: int) -> list[Session]:
         return [self._sess(r) for r in self.conn.execute(
             "SELECT * FROM sessions WHERE project_id=? AND status!='hidden' ORDER BY last_active DESC", (project_id,))]
+
+    def set_context(self, sid: int, data: dict | None) -> None:
+        self.conn.execute("UPDATE sessions SET context_json=? WHERE id=?",
+                          (json.dumps(data) if data is not None else None, sid))
+        self.conn.commit()
+
+    def context(self, sid: int) -> dict | None:
+        r = self.conn.execute("SELECT context_json FROM sessions WHERE id=?", (sid,)).fetchone()
+        return json.loads(r[0]) if r and r[0] else None
+
+    def last_usage(self, sid: int) -> dict | None:
+        """The newest per-turn usage record of a chat (input, output, cached, cost)."""
+        r = self.conn.execute("SELECT content_json FROM messages WHERE kind='usage' AND session_id=? "
+                              "ORDER BY id DESC LIMIT 1", (sid,)).fetchone()
+        return json.loads(r[0]) if r else None
 
     def child_sessions(self, sid: int) -> list[Session]:
         """Sub-agent chats started by this orchestrator chat, oldest first."""

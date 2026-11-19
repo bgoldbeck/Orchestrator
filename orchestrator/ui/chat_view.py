@@ -301,6 +301,11 @@ class ChatView(QWidget):
         self.usage.setObjectName("usageMeter")
         self.usage.setStyleSheet(f"color:{palette()['muted']}; padding-right:8px;")
         hl.addWidget(self.usage)
+        self.ctxBtn = ToolButton(FIF.PIE_SINGLE, self.header)
+        self.ctxBtn.setToolTip("What goes into each prompt (token breakdown, Lean mode)")
+        self.ctxBtn.installEventFilter(ToolTipFilter(self.ctxBtn))
+        self.ctxBtn.clicked.connect(self.show_context)
+        hl.addWidget(self.ctxBtn)
         self.diffBtn = ToolButton(FIF.DOCUMENT, self.header)
         self.diffBtn.setToolTip("Changes (git diff of this chat's folder)  ·  Ctrl+D")
         self.diffBtn.installEventFilter(ToolTipFilter(self.diffBtn))
@@ -657,6 +662,13 @@ class ChatView(QWidget):
             return ""
         proj = self.db.project(s.project_id)
         return s.cwd or (proj.path if proj else "")
+
+    def show_context(self) -> None:
+        if not self.session:
+            return
+        from orchestrator.ui.context_view import ContextDialog
+
+        ContextDialog(self.db, self.mgr, self.session.id, self.window()).exec()
 
     def show_diff(self) -> None:
         if not self.session:

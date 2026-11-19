@@ -162,6 +162,19 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - The layout button in a chat's header lists the related chats (its orchestrator, its other agents) to open beside it.
   Right-click any chat in the sidebar for **Open side by side**.
 
+## What goes into each prompt
+
+![Token breakdown](docs/screenshots/context-breakdown.png)
+
+- The pie button in a chat's header shows, after each Claude reply, what Claude Code loads into every prompt (the
+  same data as `/context`): its own instructions, built-in tools, MCP server tools (per server), CLAUDE.md files
+  (per file), the skills list and the conversation, plus the last turn's new vs cached input.
+- Tips point at what to trim: unused plugins (their skills), MCP servers you don't use, long CLAUDE.md files, or a
+  long conversation (start a new chat).
+- **Lean mode** (per chat in that dialog; default in Settings › Engines) runs Claude with only the project's own
+  settings: your plugins, skills, hooks, user MCP servers and `~/.claude/CLAUDE.md` are skipped; the project's
+  CLAUDE.md still loads. Codex reports only per-turn totals.
+
 ## Schedules: readable buttons, easy times
 
 ![Run once](docs/screenshots/schedules-custom.png)
