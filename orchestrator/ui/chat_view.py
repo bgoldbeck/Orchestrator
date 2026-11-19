@@ -39,6 +39,7 @@ from orchestrator.storage.db import Database, Session
 from orchestrator.ui.chat_widgets import (
     ApprovalCard,
     ContextChip,
+    CodeBlock,
     AssistantMessage,
     NoticeCard,
     ToolCard,
@@ -48,6 +49,8 @@ from orchestrator.ui.chat_widgets import (
     WarningLine,
     fade_in,
 )
+from orchestrator.ui import theme as T
+from orchestrator.ui.appearance import OWN_FONTS, refont_in_place
 from orchestrator.ui.theme import chat_font, palette, space
 from orchestrator.ui_text import usage_text
 
@@ -388,6 +391,8 @@ class ChatView(QWidget):
         from orchestrator.ui.appearance import hub
 
         hub.changed.connect(self.restyle)
+        self.setProperty(OWN_FONTS, True)  # global refont leaves us alone: restyle() sizes chat/code text
+        self._sizes = (T.LOOK["chat_size"], T.LOOK["code_size"], T.LOOK["font"], T.LOOK["code_font"])
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -577,8 +582,14 @@ class ChatView(QWidget):
         """Settings › Appearance changed: rebuild the shown chat with the new fonts/density."""
         self.prompt.edit.setFont(chat_font())
         self.stream.setSpacing(space(10))
+        old, self._sizes = self._sizes, (T.LOOK["chat_size"], T.LOOK["code_size"], T.LOOK["font"], T.LOOK["code_font"])
         if self.session and self.mgr.is_running(self.session.id):
-            self._restyle_pending = True  # don't disturb a streaming turn; redo when it finishes
+            # Don't rebuild a streaming turn: resize what is shown now, rebuild fully when it finishes.
+            refont_in_place(self.column, old, self._sizes)
+            for cb in self.column.findChildren(CodeBlock):
+                cb.set_code(cb.code, cb.lang.text())
+            self._refit()
+            self._restyle_pending = True
             return
         self._restyle_pending = False
         if self.session:

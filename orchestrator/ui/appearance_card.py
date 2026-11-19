@@ -60,7 +60,7 @@ class AppearanceCard(QWidget):
         for key, label in A.THEMES.items():
             self.theme.addItem(key, label, lambda k=key: self._set(theme=k))
         self.theme.setCurrentItem(self.look.theme)
-        row("Theme", self.theme, "System follows Windows.")
+        row("Theme", self.theme, "Black is a darker Dark for OLED screens. System follows Windows.")
 
         acc = QWidget(self)
         al = QHBoxLayout(acc)
@@ -115,6 +115,7 @@ class AppearanceCard(QWidget):
 
         self.preview = QFrame(self)
         self.preview.setObjectName("appearancePreview")
+        self.preview.setProperty("ownFonts", True)  # rebuilt with the chosen sizes on every change
         self.preview.setMinimumWidth(320)
         self.previewLay = QVBoxLayout(self.preview)
         outer.addWidget(self.preview, 2)

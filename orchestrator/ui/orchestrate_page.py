@@ -51,7 +51,7 @@ from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database, Orchestration, Task
 from orchestrator.ui.chat_view import ModelPill
 from orchestrator.ui.number_box import NumberBox
-from orchestrator.ui.theme import STATUS_COLORS, engine_badge, palette
+from orchestrator.ui.theme import STATUS_COLORS, engine_badge, palette, ui_pt, ui_ptf
 from orchestrator.ui_text import relative, usage_text
 
 TASK_COLORS = {"proposed": STATUS_COLORS["waiting"], "queued": STATUS_COLORS["idle"], "running": STATUS_COLORS["running"],
@@ -76,7 +76,7 @@ def status_pill(status: str, parent: QWidget, label: str | None = None) -> QLabe
     lb = QLabel(f"●  {label or TASK_LABELS.get(status, status)}", parent)
     lb.setObjectName("statusPill")
     lb.setStyleSheet(f"QLabel#statusPill {{ color:{col}; background:transparent; border:1px solid {col};"
-                     f" border-radius:9px; padding:1px 9px; font-size:8.5pt; }}")
+                     f" border-radius:9px; padding:1px 9px; font-size:{ui_pt(8.5)}; }}")
     return lb
 
 
@@ -333,7 +333,7 @@ def run_pill(state: str, parent: QWidget, extra: str = "") -> QLabel:
     lb.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
     lb.setFixedHeight(22)
     lb.setStyleSheet(f"QLabel#runPill {{ color:{col}; border:1px solid {col}; border-radius:9px; padding:0 8px;"
-                     f" font-size:8.5pt; background:transparent; }}")
+                     f" font-size:{ui_pt(8.5)}; background:transparent; }}")
     return lb
 
 
@@ -456,7 +456,7 @@ class OrchestratePage(SmoothScrollArea):
         self.heading.setObjectName("orchHeading")
         f = QFont("Georgia")
         f.setStyleHint(QFont.Serif)
-        f.setPointSize(24)
+        f.setPointSizeF(ui_ptf(24))
         self.heading.setFont(f)
         self.heading.setWordWrap(True)
         self.heading.setStyleSheet(f"color:{p['text']}; background:transparent;")

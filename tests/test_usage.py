@@ -255,3 +255,50 @@ def test_claude_account_usage_fetch_and_fallback(db, monkeypatch):
     monkeypatch.setattr(U, "_oauth_cache", {})
     u = U.ClaudeUsage().read(db)
     assert not u.window("five_hour").exact and "/login" in u.note
+
+
+def test_claude_login_helper(tmp_path, monkeypatch):
+    import json
+
+    from orchestrator.core import claude_login as L
+
+    cred = tmp_path / ".credentials.json"
+    cred.write_text(json.dumps({"mcpOAuth": {}}))
+    assert not L.has_cli_login(cred)
+    cred.write_text(json.dumps({"claudeAiOauth": {"accessToken": "x"}}))
+    assert L.has_cli_login(cred)
+    calls = []
+    monkeypatch.setattr(L, "claude_cli", lambda: "/bin/claude")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "secret")
+    assert L.launch_login(popen=lambda cmd, **kw: calls.append((cmd, kw))) == ""
+    cmd, kw = calls[0]
+    assert cmd[-2:] == ["/bin/claude", "/login"] and "CLAUDE_CODE_OAUTH_TOKEN" not in kw["env"]
+    monkeypatch.setattr(L, "claude_cli", lambda: None)
+    assert "Couldn't find" in L.launch_login(popen=lambda *a, **k: None)
+
+
+def test_force_next_fetch_and_needs_login(tmp_path, monkeypatch):
+    from orchestrator.core import usage as U
+    from orchestrator.storage.db import Database
+
+    db = Database(tmp_path / "t.db")
+    monkeypatch.delenv("ORCHESTRATOR_NO_USAGE_FETCH", raising=False)
+    calls = []
+
+    def fake():
+        calls.append(1)
+        return {"at": 1e12, "five_hour": {"used_percent": 10.0, "resets_at": None}}
+
+    monkeypatch.setattr(U, "fetch_claude_oauth_usage", fake)
+    monkeypatch.setattr(U, "_oauth_cache", {})
+    U.claude_oauth_usage(db)
+    U.claude_oauth_usage(db)
+    assert len(calls) == 1  # cached
+    U.force_next_fetch()
+    U.claude_oauth_usage(db)
+    assert len(calls) == 2
+    u = U.ClaudeUsage(root=tmp_path).read(db)
+    assert not u.needs_login and u.window("five_hour").exact
+    monkeypatch.setattr(U, "_oauth_cache", {"at": 1e12, "error": "403"})
+    monkeypatch.setenv("ORCHESTRATOR_NO_USAGE_FETCH", "1")
+    assert U.ClaudeUsage(root=tmp_path).read(db).needs_login

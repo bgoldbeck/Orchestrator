@@ -42,7 +42,7 @@ def demo_logs(home: Path) -> None:
 
 def main() -> int:
     which = sys.argv[1] if len(sys.argv) > 1 else "page"
-    out = ROOT / "docs" / "screenshots" / f"usage-{which}.png"
+    out = Path(os.environ["SHOT_OUT"]) if os.environ.get("SHOT_OUT") else ROOT / "docs" / "screenshots" / f"usage-{which}.png"
     home = Path(tempfile.mkdtemp(prefix="orch-usage-"))
     os.environ["ORCHESTRATOR_HOME"] = str(home / "home")
     os.environ["ORCHESTRATOR_INDEX_CLAUDE"] = str(home / "claude")
@@ -88,6 +88,10 @@ def main() -> int:
     mgr = SessionManager(db)
     win = MainWindow(db, mgr, _app_icon())
     win.setMicaEffectEnabled(False)
+    if os.environ.get("SHOT_THEME"):  # e.g. SHOT_THEME=Black
+        from orchestrator.ui import appearance as A
+
+        A.apply(A.Look(theme=os.environ["SHOT_THEME"]))
     win.resize(1320, 860)
     win.show()
 

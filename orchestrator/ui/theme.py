@@ -30,7 +30,7 @@ ENGINE_COLORS = {"claude": "#d97757", "codex": "#10a37f"}
 # Current look (Settings › Appearance). orchestrator.ui.appearance fills this in at startup and on every change;
 # widgets read it through the helpers below when they are built.
 LOOK: dict = {"font": UI_FONT, "ui_size": 10.0, "chat_size": 10.5, "code_font": "Cascadia Code", "code_size": 9.5,
-              "density": "Comfortable"}
+              "density": "Comfortable", "theme": "Dark"}
 
 
 def ui_families() -> list[str]:
@@ -53,6 +53,15 @@ def mono_css() -> str:
     return ", ".join([fam, *rest])
 
 
+def ui_ptf(base: float) -> float:
+    """A fixed point size designed at the default 10 pt UI font, scaled with Settings › Font size."""
+    return max(6.0, round(base * float(LOOK["ui_size"]) / 10.0, 1))
+
+
+def ui_pt(base: float) -> str:
+    return f"{ui_ptf(base):g}pt"
+
+
 def code_pt(delta: float = 0.0) -> str:
     return f"{max(6.0, float(LOOK['code_size']) + delta):g}pt"
 
@@ -70,7 +79,24 @@ def c(dark: str, light: str) -> str:
     return dark if isDarkTheme() else light
 
 
+def black() -> bool:
+    """The Black (OLED) theme is on: Dark, with near-black surfaces."""
+    return LOOK.get("theme") == "Black" and isDarkTheme()
+
+
+BLACK = {"card": "rgba(255,255,255,0.035)", "card_hover": "rgba(255,255,255,0.06)", "code_bg": "#0a0b0d",
+         "code_head": "#121418", "user_bubble": "rgba(255,255,255,0.06)", "sidebar": "rgba(0,0,0,0.0)",
+         "border": "rgba(255,255,255,0.07)"}
+
+
 def palette() -> dict[str, str]:
+    p = _palette()
+    if black():
+        p.update(BLACK)
+    return p
+
+
+def _palette() -> dict[str, str]:
     return {
         "text": c("#e6e6e6", "#1b1b1b"),
         "muted": c("#9aa0a6", "#5f6368"),

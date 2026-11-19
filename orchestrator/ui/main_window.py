@@ -168,6 +168,9 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.settings, FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setExpandWidth(200)
         self.navigationInterface.setCollapsible(True)
+        from orchestrator.ui.appearance import style_window
+
+        style_window(self)  # Black theme: near-black window instead of Mica
         self.projects.openProject.connect(self.open_project)
         self.projects.projectsChanged.connect(self._reload_sidebar)
         self.stackedWidget.currentChanged.connect(self._on_page)

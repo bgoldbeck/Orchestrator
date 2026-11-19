@@ -41,7 +41,7 @@ from qfluentwidgets import (
 )
 
 from orchestrator.storage.db import Database, Project
-from orchestrator.ui.theme import palette
+from orchestrator.ui.theme import palette, ui_ptf
 from orchestrator.ui_text import relative
 
 PROJECT_ICONS = ["FOLDER", "CODE", "GAME", "GLOBE", "ROBOT", "PHOTO", "MUSIC", "BOOK_SHELF", "DEVELOPER_TOOLS",
@@ -263,7 +263,7 @@ class ProjectsPage(SmoothScrollArea):
         title = QLabel("Projects", self.column)
         f = QFont()
         f.setFamilies(TITLE_FONTS)
-        f.setPointSizeF(26)
+        f.setPointSizeF(ui_ptf(26))
         title.setFont(f)
         title.setStyleSheet(f"color:{palette()['text']}; background:transparent;")
         head.addWidget(title)

@@ -27,7 +27,7 @@ from qfluentwidgets import (
 from orchestrator.core import board as B
 from orchestrator.core import model_registry
 from orchestrator.storage.db import Database, Task
-from orchestrator.ui.theme import ENGINE_COLORS, palette
+from orchestrator.ui.theme import ENGINE_COLORS, palette, ui_pt
 from orchestrator.ui_text import relative
 
 GROUP_TITLES = {"ready": "Ready now", "proposed": "Needs your OK"}
@@ -56,7 +56,7 @@ def _pill(text: str, parent: QWidget, fg: str, bg: str = "transparent", border: 
     lb = QLabel(text, parent)
     lb.setObjectName("pill")
     lb.setStyleSheet(f"QLabel#pill {{ color:{fg}; background:{bg}; border:1px solid {border or bg};"
-                     f" border-radius:9px; padding:1px 8px; font-size:8.5pt; {'font-weight:600;' if bold else ''} }}")
+                     f" border-radius:9px; padding:1px 8px; font-size:{ui_pt(8.5)}; {'font-weight:600;' if bold else ''} }}")
     return lb
 
 
@@ -65,7 +65,7 @@ def _engine_tag(engine: str, parent: QWidget) -> QLabel:
     lb = QLabel({"claude": "Claude", "codex": "Codex"}.get(engine, engine), parent)
     lb.setObjectName("engineTag")
     lb.setStyleSheet(f"QLabel#engineTag {{ color:{col}; border:1px solid {col}; border-radius:9px;"
-                     f" padding:0px 7px; font-size:8pt; font-weight:600; background:transparent; }}")
+                     f" padding:0px 7px; font-size:{ui_pt(8)}; font-weight:600; background:transparent; }}")
     return lb
 
 
@@ -380,7 +380,7 @@ class BoardPage(QWidget):
         b.setObjectName("groupHead")
         b.setCursor(Qt.PointingHandCursor)
         b.setStyleSheet(f"QPushButton#groupHead {{ text-align:left; border:none; background:transparent;"
-                        f" color:{palette()['muted']}; font-size:8.5pt; font-weight:600; padding:4px 2px; }}"
+                        f" color:{palette()['muted']}; font-size:{ui_pt(8.5)}; font-weight:600; padding:4px 2px; }}"
                         f" QPushButton#groupHead:hover {{ color:{palette()['text']}; }}")
         b.clicked.connect(lambda: self._toggle(name))
         return b

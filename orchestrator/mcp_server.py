@@ -231,7 +231,7 @@ def build_app_server():
                              accent: str = "", font: str = "", code_font: str = "", code_font_size: str = "") -> str:
         """Change how the app looks. Sizes take points ("11"), relative changes ("bigger", "smaller", "+1") or
         "default". font_size = menus/buttons, chat_font_size = messages. "Increase the font size" -> both bigger.
-        theme: dark | light | system. density: compact | comfortable. accent: Sky, Violet, Emerald, Amber, Rose or
+        theme: dark | black (darker, for OLED screens) | light | system. density: compact | comfortable. accent: Sky, Violet, Emerald, Amber, Rose or
         #rrggbb. Leave the rest empty."""
         return _dump(await bridge_call("set_appearance", {k: v for k, v in {
             "font_size": font_size, "chat_font_size": chat_font_size, "theme": theme, "density": density,

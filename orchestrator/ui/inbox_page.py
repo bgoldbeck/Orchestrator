@@ -22,7 +22,7 @@ from qfluentwidgets import (
 
 from orchestrator.core import inbox as I
 from orchestrator.storage.db import Database
-from orchestrator.ui.theme import palette
+from orchestrator.ui.theme import palette, ui_pt
 from orchestrator.ui_text import relative
 
 REFRESH_MS = 20_000
@@ -49,7 +49,7 @@ class InboxCard(QFrame):
         kind = QLabel(I.KIND_TITLES.get(item.kind, item.kind), self)
         kind.setObjectName("kind")
         kind.setStyleSheet(f"QLabel#kind {{ color:#fff; background:{col}; border-radius:9px; padding:1px 8px;"
-                           f" font-size:8.5pt; font-weight:600; }}")
+                           f" font-size:{ui_pt(8.5)}; font-weight:600; }}")
         top.addWidget(kind)
         if item.task_id:
             ident = CaptionLabel(f"T-{item.task_id}", self)

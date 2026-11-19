@@ -195,8 +195,9 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - The **project picker** is always at the top left: switch projects, pick **Auto** (chosen from the goal) or add a
   folder. A project opens on its **home**: the goal box and the project's runs (running, needs you, done).
   **Run settings** holds how many tasks run at once and git worktrees.
-- Inside a run the header reads **project › run**; click the run name to switch runs, **Stop all** and **New goal**
-  sit on the right.
+- Inside a run the header reads **← All runs · project › run**. **All runs** (or Alt+Left) goes back to the
+  project's home; the run keeps going. Click the run name to switch runs; **Stop all** and **New goal** sit on the
+  right.
 - The **planner chat stays on the left** and you keep talking to it. Nothing jumps to Chats.
 - The right pane lists the run's tasks. **Needs you** comes first with the buttons right there (answer a question,
   start a proposed task, merge a review); then **Working**, **Queued** and **Done**. Click a task to open its chat in
@@ -315,7 +316,8 @@ Both sources report percent **used**, and the app shows 100 minus that:
 - Claude's rate-limit event `utilization` is documented as the "fraction of the rate limit consumed (0.0 - 1.0)".
 
 A new provider fills in `used_percent` or `left_percent` on each `Window`. The UI reads only `remaining_pct`. Click it to open **Usage**, which shows
-details, the source and a small history per window. Usage refreshes every 2 minutes and after each turn.
+details, the source and a small history per window. Usage refreshes every 2 minutes and after each turn;
+**Refresh now** asks Claude and Codex again right away.
 
 What is exact and what is an estimate:
 
@@ -325,6 +327,10 @@ What is exact and what is an estimate:
   utilization, reset time, window). It sends one only when something changes, often only for the window that is
   close to its limit. Windows without a report show an **estimate**: tokens used in that window, from the local
   Claude Code logs. That estimate has no percentage, because the logs do not include the plan size.
+- **Claude account usage: exact, always.** Once you're signed in to the Claude Code CLI, the app asks your account
+  for the 5-hour and weekly percent every 5 minutes. A `claude setup-token` token can't read this, so the Claude
+  card shows **Sign in to Claude** when it is missing: it opens a terminal running `claude /login`, you finish in
+  the browser, and the page updates by itself. Chats keep using your current token.
 
 More providers (for example the Anthropic API) can be added by subclassing `UsageProvider` in
 `orchestrator/core/usage.py` and calling `register()`.
@@ -361,7 +367,8 @@ off, shows a warning.
 
 Settings › **Appearance** has these settings:
 
-- Theme: Dark, Light or System (follows Windows).
+- Theme: Dark, Black (a darker Dark on a near-black window, for OLED screens), Light or System (follows Windows).
+- Font size changes apply at once everywhere, including open chats and chats that are still working.
 - Accent color: five presets, or any color through Custom….
 - Font for the whole app.
 - UI font size: menus, buttons and labels. Default 10 pt.
