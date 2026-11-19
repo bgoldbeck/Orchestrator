@@ -146,6 +146,7 @@ class MainWindow(FluentWindow):
         self.chats = LazyPage("chatsPage", lambda p: ChatsPage(db, mgr, p), self._chats_built, self)
         self.orchestrate = LazyPage("orchestratePage", self._make_orchestrate, self._orchestrate_built, self)
         self.board = LazyPage("boardPage", self._make_board, self._board_built, self)
+        self.inbox = LazyPage("inboxPage", self._make_inbox, self._inbox_built, self)
         self.schedules = (LazyPage("schedulesPage", self._make_schedules, self._schedules_built, self)
                           if runner is not None else None)
         self.settings = LazyPage("settingsPage", self._make_settings, self._settings_built, self)
@@ -157,6 +158,9 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
         self.addSubInterface(self.orchestrate, FIF.ROBOT, "Orchestrate")
         self.addSubInterface(self.board, FIF.TILES, "Board")
+        self.inboxNav = self.addSubInterface(self.inbox, FIF.RINGER, "Waiting on you")
+        self._inboxTimer = QTimer(self, interval=30_000, timeout=self._update_inbox_count)
+        self._inboxTimer.start()
         if self.schedules is not None:
             self.addSubInterface(self.schedules, FIF.DATE_TIME, "Schedules")
         self.addSubInterface(self.mcp, FIF.IOT, "MCP servers", NavigationItemPosition.BOTTOM)
@@ -325,6 +329,8 @@ class MainWindow(FluentWindow):
 
             self.om = OrchestrationManager(self.db, self.mgr, self)
             self.om.changed.connect(lambda _o: self.chats.built and self.chats.sidebar.reload_soon())
+            self._inboxSoon = QTimer(self, singleShot=True, interval=500, timeout=self._update_inbox_count)
+            self.om.changed.connect(lambda _o: self._inboxSoon.start())
             if self.runner is not None:  # scheduled orchestrations start through the same manager
                 self.runner.start_orchestration = self.om.start
         return self.om
@@ -365,6 +371,31 @@ class MainWindow(FluentWindow):
 
     def _board_built(self, page) -> None:
         page.openChat.connect(self.open_task_chat)
+
+    def _make_inbox(self, parent):
+        from orchestrator.ui.inbox_page import InboxPage
+
+        return InboxPage(self.db, self._ensure_om(), parent)
+
+    def _inbox_built(self, page) -> None:
+        page.openChat.connect(self.open_task_chat)
+        page.countChanged.connect(self._set_inbox_count)
+
+    def _update_inbox_count(self) -> None:
+        """Nav label "Waiting on you (n)", kept current even before the page is opened."""
+        if self.om is None:
+            return
+        from orchestrator.core import inbox
+
+        try:
+            self._set_inbox_count(len(inbox.build(self.db, self.om)))
+        except Exception:  # noqa: BLE001 - a count must never break the window
+            pass
+
+    def _set_inbox_count(self, n: int) -> None:
+        text = f"Waiting on you ({n})" if n else "Waiting on you"
+        if self.inboxNav is not None and hasattr(self.inboxNav, "setText"):
+            self.inboxNav.setText(text)
 
     def _make_schedules(self, parent):
         from orchestrator.ui.schedules_page import SchedulesPage

@@ -15,6 +15,7 @@ from qfluentwidgets import (
     CaptionLabel,
     ComboBox,
     FluentIcon as FIF,
+    PrimaryPushButton,
     PushButton,
     RoundMenu,
     SmoothScrollArea,
@@ -35,6 +36,10 @@ CHIP = {  # status chip on a card: (text, foreground, background)
     "proposed": ("Needs your OK", "#3a2a00", "#f5c451"),
     "waiting": ("Waiting on you", "#3a2a00", "#f5c451"),
     "failed": ("Failed", "#ffffff", "#c2413b"),
+    "held": ("Held", "#ffffff", "#c2413b"),
+    "silent": ("Silent", "#ffffff", "#718096"),
+    "merge": ("Ready to merge", "#ffffff", "#2f855a"),
+    "conflict": ("Merge problem", "#ffffff", "#c2413b"),
 }
 REFRESH_MS = 15_000
 
@@ -64,11 +69,19 @@ def _engine_tag(engine: str, parent: QWidget) -> QLabel:
     return lb
 
 
-def status_line(card: B.BoardCard, now: float | None = None) -> str:
+def status_line(card: B.BoardCard, now: float | None = None, why: str = "") -> str:
     t = card.task
     now = now or time.time()
     if t.status == "queued":
-        return f"#{card.queue_pos} in line · waiting for a free agent" if card.queue_pos else "waiting for a free agent"
+        why = why or "waiting for a free agent"
+        why = why[0].lower() + why[1:] if why else why
+        return f"#{card.queue_pos} in line · {why}" if card.queue_pos else why
+    if t.status == "checking":
+        return "running the project's tests / merging"
+    if t.merge_state == "review":
+        return "finished · waiting for your review before merging"
+    if t.merge_state == "conflict":
+        return t.merge_note or "could not merge"
     if t.status == "proposed":
         return "waiting for you to start it"
     if t.status == "running":
@@ -129,16 +142,36 @@ class BoardCardWidget(QFrame):
 
         bottom = QHBoxLayout()
         bottom.setSpacing(6)
-        chip_key = card.group if card.group in CHIP else t.status if t.status in CHIP else None
+        silent = page.om.silent_minutes(t) if page.om is not None else 0
+        chip_key = ("held" if t.hold else "silent" if silent else "merge" if t.merge_state == "review"
+                    else "conflict" if t.merge_state == "conflict"
+                    else card.group if card.group in CHIP else t.status if t.status in CHIP else None)
         if chip_key:
             text, fg, bg = CHIP[chip_key]
             bottom.addWidget(_pill(text, self, fg, bg, bold=True))
-        self.line = CaptionLabel(status_line(card), self)
+        why = ""
+        if t.status == "queued":
+            from orchestrator.core import queue_rules
+
+            why = queue_rules.why_waiting(page.db, t, page.om.paused() if page.om is not None else {})
+        line = f"no output for {silent} min" if silent else status_line(card, why=why)
+        self.line = CaptionLabel(line, self)
         self.line.setStyleSheet(f"color:{p['muted']};")
         bottom.addWidget(self.line, 1)
         lay.addLayout(bottom)
 
         summary = ((t.result or {}).get("summary") or "") if card.column in ("review", "done") else ""
+        if card.column in ("review", "done"):
+            from orchestrator.core import review
+
+            extra = [review.checks_text(t.checks)] if t.checks else []
+            if t.merge_state in ("merged", "discarded"):
+                extra.append(t.merge_note or t.merge_state)
+            if extra:
+                ex = CaptionLabel("  ·  ".join(extra), self)
+                ex.setStyleSheet(f"color:{'#c2413b' if t.checks and not t.checks.get('ok') else p['muted']};")
+                ex.setWordWrap(True)
+                lay.addWidget(ex)
         if summary:
             s = CaptionLabel(summary if len(summary) < 180 else summary[:177] + "…", self)
             s.setWordWrap(True)
@@ -151,7 +184,20 @@ class BoardCardWidget(QFrame):
         row = QHBoxLayout()
         row.setSpacing(6)
         om = self.page.om
-        if self.card.column == "review":
+        if self.card.column == "review" and t.merge_state in ("review", "conflict") and om is not None:
+            mg = PrimaryPushButton(FIF.ACCEPT, "Merge" if t.merge_state == "review" else "Try merge again", self)
+            mg.setToolTip("Merge this task's branch into your checkout, then delete the worktree and branch")
+            mg.clicked.connect(lambda: asyncio.ensure_future(om.merge_task(t.id)))
+            row.addWidget(mg)
+            ds = PushButton(FIF.DELETE, "Discard", self)
+            ds.setToolTip("Throw the changes away and delete the worktree and branch")
+            ds.clicked.connect(lambda: asyncio.ensure_future(om.discard_task(t.id)))
+            row.addWidget(ds)
+            diff = TransparentToolButton(FIF.DOCUMENT, self)
+            diff.setToolTip("Show the changes")
+            diff.clicked.connect(lambda: self.page.show_diff(t.id))
+            row.addWidget(diff)
+        elif self.card.column == "review":
             ok = PushButton(FIF.ACCEPT, "Looks good", self)
             ok.setToolTip("Move it to Done")
             ok.clicked.connect(lambda: self.page.mark_reviewed(t.id))
@@ -379,7 +425,9 @@ class BoardPage(QWidget):
         if om is not None and t.status == "queued":
             menu.addAction(Action(FIF.UP, "Run sooner", triggered=lambda: om.move_task(t.id, -1)))
             menu.addAction(Action(FIF.DOWN, "Run later", triggered=lambda: om.move_task(t.id, 1)))
-        if om is not None and t.status in ("queued", "running", "waiting"):
+        if om is not None and t.hold:
+            menu.addAction(Action(FIF.PLAY, "Run anyway", triggered=lambda: om.run_anyway(t.id)))
+        if om is not None and t.status in ("queued", "proposed", "running", "waiting"):
             menu.addAction(Action(FIF.CLOSE, "Stop", triggered=lambda: asyncio.ensure_future(om.stop_task(t.id))))
         if card.column == "review":
             menu.addAction(Action(FIF.ACCEPT, "Looks good", triggered=lambda: self.mark_reviewed(t.id)))

@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +89,14 @@ MIGRATIONS = [
     ("schedules", "options_json", "TEXT"),  # orchestration: {"max_parallel": n, "auto_planner": bool}
     ("tasks", "reviewed_at", "REAL"),
     ("sessions", "context_json", "TEXT"),  # last ContextInfo: what the engine loads into every prompt  # Board: a finished task moves from Review to Done when the user marks it
+    ("tasks", "depends_json", "TEXT"),  # task ids that must finish (done) before this one starts
+    ("tasks", "done_when_json", "TEXT"),  # fixed "done when" criteria, set at delegate, never changed after the start
+    ("tasks", "files_json", "TEXT"),  # files the task expects to change (no two running tasks share one)
+    ("tasks", "checks_json", "TEXT"),  # the project's test command, run by the app on the delivered work
+    ("tasks", "merge_state", "TEXT"),  # worktree tasks: review | merged | conflict | discarded | failed
+    ("tasks", "merge_note", "TEXT"),
+    ("tasks", "hold_json", "TEXT"),  # why a queued task is held for the user (e.g. a dependency failed)
+    ("questions", "recommended", "TEXT"),
 ]
 
 
@@ -186,6 +194,7 @@ class Question:
     answer: str | None
     created_at: float
     answered_at: float | None
+    recommended: str | None = None
 
 
 @dataclass
@@ -212,6 +221,13 @@ class Task:
     proposal: dict | None = None
     queue_pos: float | None = None
     reviewed_at: float | None = None
+    depends_on: list[int] = field(default_factory=list)
+    done_when: list[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+    checks: dict | None = None
+    merge_state: str | None = None
+    merge_note: str | None = None
+    hold: dict | None = None
 
 
 @dataclass
@@ -539,7 +555,9 @@ class Database:
                     r["created_at"], r["started_at"], r["finished_at"], r["pick_reason"], bool(r["auto_picked"]),
                     bool(r["reused"]), bool(r["escalated"]),
                     json.loads(r["proposal_json"]) if r["proposal_json"] else None, r["queue_pos"],
-                    r["reviewed_at"])
+                    r["reviewed_at"], json.loads(r["depends_json"] or "[]"), json.loads(r["done_when_json"] or "[]"),
+                    json.loads(r["files_json"] or "[]"), json.loads(r["checks_json"]) if r["checks_json"] else None,
+                    r["merge_state"], r["merge_note"], json.loads(r["hold_json"]) if r["hold_json"] else None)
 
     def add_task(self, oid: int, engine: str, model: str, effort: str, title: str, instructions: str,
                  cwd: str | None = None) -> Task:
@@ -589,6 +607,11 @@ class Database:
         if "proposal" in fields:
             prop = fields.pop("proposal")
             fields["proposal_json"] = json.dumps(prop) if prop is not None else None
+        for key, col in (("depends_on", "depends_json"), ("done_when", "done_when_json"), ("files", "files_json"),
+                         ("checks", "checks_json"), ("hold", "hold_json")):
+            if key in fields:
+                val = fields.pop(key)
+                fields[col] = json.dumps(val) if val is not None else None
         if fields:
             cols = ", ".join(f"{k}=?" for k in fields)
             self.conn.execute(f"UPDATE tasks SET {cols} WHERE id=?", (*fields.values(), tid))
@@ -598,11 +621,13 @@ class Database:
     @staticmethod
     def _q(r: sqlite3.Row) -> Question:
         return Question(r["id"], r["orchestration_id"], r["text"], json.loads(r["options_json"] or "[]"), r["answer"],
-                        r["created_at"], r["answered_at"])
+                        r["created_at"], r["answered_at"], r["recommended"])
 
-    def add_question(self, oid: int, text: str, options: list[str] | None = None) -> Question:
-        cur = self.conn.execute("INSERT INTO questions(orchestration_id,text,options_json,created_at) VALUES(?,?,?,?)",
-                                (oid, text, json.dumps(options or []), time.time()))
+    def add_question(self, oid: int, text: str, options: list[str] | None = None,
+                     recommended: str | None = None) -> Question:
+        cur = self.conn.execute(
+            "INSERT INTO questions(orchestration_id,text,options_json,created_at,recommended) VALUES(?,?,?,?,?)",
+            (oid, text, json.dumps(options or []), time.time(), recommended or None))
         self.conn.commit()
         return self.question(cur.lastrowid)  # type: ignore[return-value]
 
@@ -613,6 +638,22 @@ class Database:
     def open_questions(self, oid: int) -> list[Question]:
         return [self._q(r) for r in self.conn.execute(
             "SELECT * FROM questions WHERE orchestration_id=? AND answer IS NULL ORDER BY id", (oid,))]
+
+    def all_open_questions(self) -> list[Question]:
+        """Unanswered questions of running orchestrations (the "Waiting on you" inbox)."""
+        return [self._q(r) for r in self.conn.execute(
+            "SELECT q.* FROM questions q JOIN orchestrations o ON o.id=q.orchestration_id "
+            "WHERE q.answer IS NULL AND o.status='running' ORDER BY q.id")]
+
+    def active_tasks(self) -> list[Task]:
+        """Every task that is not finished, or finished but still waiting for a merge decision."""
+        return [self._task(r) for r in self.conn.execute(
+            "SELECT * FROM tasks WHERE status IN ('proposed','queued','running','waiting','checking') "
+            "OR merge_state IN ('review','conflict') ORDER BY id")]
+
+    def tasks_running(self) -> list[Task]:
+        return [self._task(r) for r in self.conn.execute(
+            "SELECT * FROM tasks WHERE status IN ('running','waiting') ORDER BY id")]
 
     def answer_question(self, qid: int, answer: str) -> None:
         self.conn.execute("UPDATE questions SET answer=?, answered_at=? WHERE id=?", (answer, time.time(), qid))
