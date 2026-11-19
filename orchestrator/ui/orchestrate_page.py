@@ -358,6 +358,7 @@ class PickSessionDialog(MessageBoxBase):
 class OrchestratePage(SmoothScrollArea):
     openChat = Signal(int)
     projectsChanged = Signal()
+    runChanged = Signal(object)  # orchestration id shown, or None (new goal)
 
     def __init__(self, db: Database, mgr: SessionManager, om: OrchestrationManager, parent: QWidget | None = None):
         super().__init__(parent)
@@ -789,6 +790,11 @@ class OrchestratePage(SmoothScrollArea):
         return best, matches
 
     def render_board(self) -> None:
+        o = self.db.orchestration(self.current) if self.current else None
+        shown = (self.current, o.session_id if o else None)
+        if shown != getattr(self, "_shown_run", None):  # tell the workspace which planner chat to show
+            self._shown_run = shown
+            self.runChanged.emit(self.current)
         for c in self.cards.values():
             c.setParent(None)
             c.deleteLater()

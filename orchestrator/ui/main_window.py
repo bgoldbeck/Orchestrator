@@ -281,6 +281,8 @@ class MainWindow(FluentWindow):
             self.app_control = ctl
             if self.chats.built:
                 self.chats.chat.set_app_control(ctl)
+            if self.orchestrate.built:
+                self.orchestrate.content.set_app_control(ctl)
         return self.app_control
 
     def _app_changed(self, area: str) -> None:
@@ -349,12 +351,13 @@ class MainWindow(FluentWindow):
             page.chat.runOnceRequested.connect(self._run_once_from_chat)
 
     def _make_orchestrate(self, parent):
-        from orchestrator.ui.orchestrate_page import OrchestratePage
+        from orchestrator.ui.orchestrate_workspace import OrchestrateWorkspace
 
-        return OrchestratePage(self.db, self.mgr, self._ensure_om(), parent)
+        return OrchestrateWorkspace(self.db, self.mgr, self._ensure_om(), parent)
 
     def _orchestrate_built(self, page) -> None:
-        page.openChat.connect(self.open_task_chat)
+        if self.app_control is not None:
+            page.set_app_control(self.app_control)
         page.runner = self.runner
         page.projectsChanged.connect(self._reload_sidebar)
         page.projectsChanged.connect(self._refresh_projects_if_visible)
@@ -544,7 +547,23 @@ class MainWindow(FluentWindow):
         self.chats.open_side(side_sid)
 
     def open_task_chat(self, sid: int) -> None:
-        """Open a sub-agent's chat next to its orchestrator when it has one, else on its own."""
+        """A sub-agent's chat: in the Orchestrate workspace next to its planner when it is an orchestration task,
+        else next to its parent chat on the Chats page, else on its own."""
+        t = self.db.task_for_session(sid)
+        if t is not None:
+            self.bring_to_front()
+            self.switchTo(self.orchestrate)
+            ws = self.orchestrate.ensure()
+            o = self.db.orchestration(t.orchestration_id)
+            if o:
+                ws.project.setCurrentIndex(max(0, ws.project.findData(o.project_id)))
+                i = ws.history.findData(o.id)
+                if i >= 0:
+                    ws.history.setCurrentIndex(i)
+                else:
+                    ws.show_run(o.id)
+            ws.open_agent(sid)
+            return
         s = self.db.session(sid)
         if s and s.parent_id and self.db.session(s.parent_id):
             self.open_pair(s.parent_id, sid)
