@@ -306,7 +306,7 @@ window and to fully ready (every page built and sessions refreshed from disk). O
 
 The title bar shows one pill per provider (Codex, Claude). Each pill has two thin bars: the 5-hour window on top
 and the weekly window below. Every provider uses the same convention, **percent left**: bars fill with what is
-left, and the number is the tightest window's percent left (for example "26% left"). Colors: green above 30% left,
+left, and the number is the **weekly** percent left for every provider (for example "26% left"). Colors: green above 30% left,
 amber 10–30%, red under 10%. Hover a pill to see "46% used · 54% left" and when each window resets.
 
 Both sources report percent **used**, and the app shows 100 minus that:

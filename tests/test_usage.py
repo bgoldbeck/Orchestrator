@@ -302,3 +302,13 @@ def test_force_next_fetch_and_needs_login(tmp_path, monkeypatch):
     monkeypatch.setattr(U, "_oauth_cache", {"at": 1e12, "error": "403"})
     monkeypatch.setenv("ORCHESTRATOR_NO_USAGE_FETCH", "1")
     assert U.ClaudeUsage(root=tmp_path).read(db).needs_login
+
+
+def test_pill_shows_weekly_for_every_provider():
+    from orchestrator.core.usage import Window
+    from orchestrator.ui.usage_view import pill_window
+
+    five = Window("five_hour", "5-hour", left_percent=8.0)
+    week = Window("weekly", "Weekly", left_percent=60.0)
+    assert pill_window([five, week]) is week  # not the tighter 5-hour window
+    assert pill_window([five]) is None and pill_window([Window("weekly", "Weekly")]) is None

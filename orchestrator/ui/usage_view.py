@@ -63,7 +63,7 @@ def window_text(w: U.Window) -> str:
 
 
 def tooltip_for(u: U.ProviderUsage) -> str:
-    lines = [u.name]
+    lines = [f"{u.name}  (the number on the pill is weekly % left)"]
     for w in u.windows:
         lines.append(window_text(w))
         if w.estimate and not w.exact:
@@ -72,6 +72,12 @@ def tooltip_for(u: U.ProviderUsage) -> str:
         lines.append(u.note)
     lines.append("Click for details.")
     return "\n".join(lines)
+
+
+def pill_window(windows: list[U.Window]) -> U.Window | None:
+    """The window whose percent the pill shows: weekly for every provider, so pills compare like for like."""
+    w = next((w for w in windows if w.key == "weekly" and w.remaining_pct is not None), None)
+    return w
 
 
 class UsagePill(QWidget):
@@ -149,8 +155,8 @@ class UsagePill(QWidget):
                     col.setAlphaF(0.55)
                 p.setBrush(col)
                 p.drawRoundedRect(QRectF(x, y, max(3.0, bw * w.remaining_pct / 100), 3), 1.5, 1.5)
-        tight = U.tightest(windows)
-        pct = f"{tight.remaining_pct:.0f}% left" if tight else "—"  # what limits you first
+        week = pill_window(windows)
+        pct = f"{week.remaining_pct:.0f}% left" if week else "—"  # weekly for every provider (5-hour: tooltip)
         p.setPen(qcolor(pal["text"]))
         p.drawText(QRectF(x + bw + 6, r.top(), r.right() - (x + bw + 6) - 4, r.height()),
                    Qt.AlignVCenter | Qt.AlignLeft, pct)
