@@ -74,4 +74,16 @@ class RateLimit:
     resets_at: float | None = None
 
 
-Event = Union[Started, Text, ToolCall, ToolResult, NeedsApproval, Usage, Done, Error, RateLimit]
+@dataclass
+class ContextInfo:
+    """What the engine loads into every prompt, after a turn (Claude: the same data as /context).
+
+    ``data`` keys: categories [{name, tokens}], total, max, model, memory_files [{path, tokens}],
+    mcp [{server, tools, tokens, status}], plugins [names], skills (count), lean (bool).
+    """
+
+    engine: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+Event = Union[Started, Text, ToolCall, ToolResult, NeedsApproval, Usage, Done, Error, RateLimit, ContextInfo]
