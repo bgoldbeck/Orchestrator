@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import abc
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from orchestrator.core.events import Event, NeedsApproval
@@ -26,6 +26,8 @@ class TurnRequest:
     # Claude only: skip user-level settings (plugins, skills, hooks, ~/.claude/CLAUDE.md, user MCP servers);
     # the project's own CLAUDE.md and settings still load.
     lean: bool = False
+    # MCP servers from the user's own config to hide this turn (switched off in Orchestrator).
+    mcp_off: list[str] = field(default_factory=list)
 
 
 class AgentAdapter(abc.ABC):

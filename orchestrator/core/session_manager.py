@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from orchestrator.core import auth
-from orchestrator.core import model_registry
+from orchestrator.core import mcp_config, model_registry
 from orchestrator.core.events import (
     ContextInfo,
     Done,
@@ -157,7 +157,8 @@ class SessionManager(QObject):
         req = TurnRequest(prompt=prompt, cwd=cwd, model=s.model or "", effort=s.effort or "",
                           resume_id=s.engine_session_id,
                           sandbox=self.run_options.get(sid, {}).get("sandbox", sandbox),
-                          mcp=self.mcp_for(sid), lean=self.lean_for(sid))
+                          mcp=self.mcp_for(sid), lean=self.lean_for(sid),
+                          mcp_off=mcp_config.off_for_run(self.db, s.engine, sid))
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"

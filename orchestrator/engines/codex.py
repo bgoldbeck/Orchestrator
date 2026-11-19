@@ -163,6 +163,8 @@ def codex_mcp_overrides(mcp: dict[str, dict] | None) -> list[str]:
 
 def build_codex_cmd(exe: str, req: TurnRequest) -> list[str]:
     common = ["--json", "--skip-git-repo-check", *codex_mcp_overrides(req.mcp)]
+    for name in req.mcp_off:  # switched off in Orchestrator; config.toml is left as it is
+        common += ["-c", f"mcp_servers.{name}.enabled=false"]
     if req.model:
         common += ["-m", req.model]
     if req.effort:

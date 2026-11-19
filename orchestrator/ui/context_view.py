@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
+    CheckBox,
     MessageBoxBase,
     SmoothScrollArea,
     StrongBodyLabel,
@@ -183,9 +184,22 @@ class ContextDialog(MessageBoxBase):
             if ctx.get("mcp"):
                 lay.addSpacing(8)
                 lay.addWidget(StrongBodyLabel("MCP servers", body))
+                from orchestrator.core import mcp_config as M
+
+                off_chat, off_all = M.off_in_chat(db, sid), M.off_everywhere(db)
                 for m in ctx["mcp"]:
                     note = f"{m['tools']} tools" + (f" · {m['status']}" if m.get("status") else "")
-                    lay.addLayout(_row(body, None, m["server"], fmt_tokens(m["tokens"]), note))
+                    row = _row(body, None, m["server"], fmt_tokens(m["tokens"]), note)
+                    if m["server"] not in M.APP_SERVERS:
+                        key = f"claude:{m['server']}"
+                        box = CheckBox("on", body)
+                        box.setToolTip("Untick to hide this server from this chat from the next message on"
+                                       if key not in off_all else "Switched off for all chats on the MCP servers page")
+                        box.setChecked(key not in off_chat and key not in off_all)
+                        box.setEnabled(key not in off_all)
+                        box.toggled.connect(lambda on, k=key: M.set_off(db, k, not on, sid))
+                        row.addWidget(box)
+                    lay.addLayout(row)
             extra = []
             if ctx.get("skills") is not None:
                 extra.append(f"{ctx['skills']} skills")

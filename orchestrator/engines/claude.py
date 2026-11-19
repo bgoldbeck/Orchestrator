@@ -251,6 +251,7 @@ class ClaudeAdapter(AgentAdapter):
             effort=req.effort if req.effort in EFFORTS else None,
             include_partial_messages=True,
             setting_sources=["project"] if req.lean else None,  # None = SDK default (user + project)
+            disallowed_tools=[f"mcp__{n}" for n in req.mcp_off],  # servers switched off in Orchestrator
             permission_mode=self.permission_mode,
             can_use_tool=can_use_tool,
             env={**_child_env(status.env), **extra_env},

@@ -175,6 +175,18 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   settings: your plugins, skills, hooks, user MCP servers and `~/.claude/CLAUDE.md` are skipped; the project's
   CLAUDE.md still loads. Codex reports only per-turn totals.
 
+## MCP servers
+
+![MCP servers](docs/screenshots/mcp-servers.png)
+
+- **MCP servers** (sidebar, bottom) lists every server Claude Code (`~/.claude.json`, user and per-project) and Codex
+  (`~/.codex/config.toml`) know, plus plugin servers seen by the last Claude chat, with their last status.
+- **On/Off** hides a server from chats started in Orchestrator (Claude: its tools are disallowed; Codex:
+  `enabled=false` for that run). Your config files are not changed. Each chat can also turn servers off from the
+  pie button's dialog.
+- **Add server** (command or URL, optional environment) and the bin button run `claude mcp add/remove` and
+  `codex mcp add/remove`, so the CLIs see the same servers. Plugin servers can only be turned off.
+
 ## Schedules: readable buttons, easy times
 
 ![Run once](docs/screenshots/schedules-custom.png)
