@@ -152,12 +152,14 @@ class MainWindow(FluentWindow):
         self.usageBar = None
         self.app_control = None
         self.usage = LazyPage("usagePage", self._make_usage, None, self)
+        self.mcp = LazyPage("mcpPage", self._make_mcp, None, self)
         self.addSubInterface(self.projects, FIF.HOME, "Projects")
         self.addSubInterface(self.chats, FIF.CHAT, "Chats")
         self.addSubInterface(self.orchestrate, FIF.ROBOT, "Orchestrate")
         self.addSubInterface(self.board, FIF.TILES, "Board")
         if self.schedules is not None:
             self.addSubInterface(self.schedules, FIF.DATE_TIME, "Schedules")
+        self.addSubInterface(self.mcp, FIF.IOT, "MCP servers", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.usage, FIF.SPEED_HIGH, "Usage", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings, FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setExpandWidth(200)
@@ -350,6 +352,11 @@ class MainWindow(FluentWindow):
         page.runner = self.runner
         page.projectsChanged.connect(self._reload_sidebar)
         page.projectsChanged.connect(self._refresh_projects_if_visible)
+
+    def _make_mcp(self, parent):
+        from orchestrator.ui.mcp_page import McpPage
+
+        return McpPage(self.db, parent)
 
     def _make_board(self, parent):
         from orchestrator.ui.board_page import BoardPage
