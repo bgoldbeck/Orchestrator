@@ -354,6 +354,7 @@ class SettingsPage(SmoothScrollArea):
                                       "Skip your own plugins, skills, hooks and ~/.claude/CLAUDE.md so each prompt "
                                       "is smaller. The project's CLAUDE.md still loads. Each chat can override this.",
                                       "claude.lean_default", False))
+        fl.addLayout(self._reset_row(f))
         lay.addWidget(f)
 
         lay.addSpacing(6)
@@ -521,6 +522,38 @@ class SettingsPage(SmoothScrollArea):
         self._probe = VersionProbe(self)
         self._probe.done.connect(self._on_version)
         self._probe.start()
+
+    def _reset_row(self, parent) -> QHBoxLayout:
+        """Context reset point for every chat (Claude and Codex, orchestrator agents too); chats can override."""
+        from qfluentwidgets import ComboBox
+
+        from orchestrator.core import context_reset as R
+        from orchestrator.ui.number_box import NumberBox
+
+        row = QHBoxLayout()
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(BodyLabel("Context reset point", parent))
+        sub = CaptionLabel("When a chat's context grows past this many tokens (thousands), it is reset with a "
+                           "carry-over summary before the next message. Applies to Claude and Codex chats and to "
+                           "orchestrator agents. Each chat can override it from its token breakdown.", parent)
+        sub.setWordWrap(True)
+        sub.setStyleSheet(f"color:{palette()['muted']};")
+        col.addWidget(sub)
+        row.addLayout(col, 1)
+        self.resetAt = NumberBox(parent, R.MIN_AT // 1000, 2000, R.default_at(self.db) // 1000)
+        self.resetAt.setObjectName("resetAtDefault")
+        self.resetAt.valueChanged.connect(lambda v: self.db.set_setting("context.reset_at", int(v) * 1000))
+        row.addWidget(self.resetAt)
+        self.resetAction = ComboBox(parent)
+        self.resetAction.setObjectName("resetActionDefault")
+        for k, label in R.ACTIONS.items():
+            self.resetAction.addItem(label, userData=k)
+        self.resetAction.setCurrentIndex(list(R.ACTIONS).index(R.default_action(self.db)))
+        self.resetAction.currentIndexChanged.connect(
+            lambda _i: self.db.set_setting("context.reset_action", self.resetAction.currentData()))
+        row.addWidget(self.resetAction)
+        return row
 
     def _shortcut_row(self, parent) -> QHBoxLayout:
         """Desktop / Start menu shortcuts with the app icon and taskbar identity, so pinning works."""

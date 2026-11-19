@@ -437,6 +437,25 @@ class Database:
         self.conn.commit()
         return cur.lastrowid, True  # type: ignore[return-value]
 
+    def detach_engine_session(self, sid: int) -> None:
+        """Start chat `sid` over in a new engine session; the old one stays on disk as a hidden row, so the
+        indexer won't bring it back as a separate chat."""
+        s = self.session(sid)
+        if not s or not s.engine_session_id:
+            return
+        if s.file_path:
+            r = self.conn.execute("SELECT file_mtime FROM sessions WHERE id=?", (sid,)).fetchone()
+            self.conn.execute("UPDATE sessions SET engine_session_id=NULL, file_path=NULL, file_mtime=NULL WHERE id=?",
+                              (sid,))
+            self.conn.execute(
+                "INSERT INTO sessions(project_id,engine,engine_session_id,title,status,source,last_active,file_path,"
+                "file_mtime,cwd) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (s.project_id, s.engine, s.engine_session_id, s.title, "hidden", "imported", s.last_active,
+                 s.file_path, r[0] if r else None, s.cwd))
+        else:
+            self.conn.execute("UPDATE sessions SET engine_session_id=NULL WHERE id=?", (sid,))
+        self.conn.commit()
+
     def delete_session(self, sid: int) -> None:
         s = self.session(sid)
         if s and s.file_path:  # backed by an engine log: hide, so the indexer won't bring it back
