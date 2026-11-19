@@ -34,6 +34,7 @@ from orchestrator.core.catalog import ENGINES
 from orchestrator.core.indexer import load_history
 from orchestrator.core.events import Done, Error, NeedsApproval, Text, ToolCall, ToolResult, Usage
 from orchestrator.core.session_manager import SessionManager
+from orchestrator.core.prompt_display import split_prompt
 from orchestrator.storage.db import Database, Session
 from orchestrator.ui.chat_widgets import (
     ApprovalCard,
@@ -731,7 +732,8 @@ class ChatView(QWidget):
         for m in msgs:
             k = m["kind"]
             if m["role"] == "user":
-                self._add(UserMessage(m["text"], attachments=m.get("attachments")), False)
+                shown, hidden = split_prompt(m["text"])
+                self._add(UserMessage(shown, attachments=m.get("attachments"), hidden=hidden), False)
             elif k == "text":
                 self._add(AssistantMessage(self.session.engine, self._engine_label(), m["text"]), False)
             elif k == "tool":

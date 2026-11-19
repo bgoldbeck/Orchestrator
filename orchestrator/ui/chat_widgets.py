@@ -228,9 +228,12 @@ class AssistantMessage(QWidget):
 
 
 class UserMessage(QWidget):
-    def __init__(self, text: str, parent: QWidget | None = None, attachments: list[str] | None = None) -> None:
+    def __init__(self, text: str, parent: QWidget | None = None, attachments: list[str] | None = None,
+                 hidden: str = "") -> None:
+        """`hidden`: the full prompt behind `text` (orchestrator instructions), shown on demand."""
         super().__init__(parent)
         p = palette()
+        self.shown_text, self.hidden_text = text, hidden
         lay = QHBoxLayout(self)
         lay.setContentsMargins(48 if parent is not None and parent.objectName() == "appearancePreview" else 96, 2, 0, 2)
         lay.addStretch(1)
@@ -253,6 +256,19 @@ class UserMessage(QWidget):
                                default=0) + 4, 520)
         lbl.setMinimumWidth(self.natural)
         bl.addWidget(lbl)
+        self.toggle = None
+        if hidden:
+            tg = QLabel(bubble)
+            tg.setObjectName("promptChip")
+            tg.setTextFormat(Qt.RichText)
+            tg.setCursor(Qt.PointingHandCursor)
+            tg.setToolTip("Orchestrator wraps this message in instructions for the agent. Click to see them.")
+            tg.setStyleSheet(f"QLabel#promptChip {{ color:{p['muted']}; background:transparent;"
+                             f" border:1px solid {p['border']}; border-radius:8px; padding:0 6px; }}")
+            tg.linkActivated.connect(lambda _l: self.show_full(self.label.text() != self.hidden_text))
+            self.toggle = tg
+            self._chip_text(False)
+            bl.addWidget(tg, 0, Qt.AlignLeft)
         if attachments:
             from orchestrator.core.attachments import label
 
@@ -263,6 +279,18 @@ class UserMessage(QWidget):
                 bl.addWidget(a)
         bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
         lay.addWidget(bubble)
+
+    def _chip_text(self, full: bool) -> None:
+        if self.toggle is not None:
+            word = "Hide" if full else "Show"
+            self.toggle.setText(f'<a href="x" style="color:{palette()["muted"]}; text-decoration:none;">'
+                                f'⚙ {word} orchestrator instructions</a>')
+
+    def show_full(self, full: bool) -> None:
+        if not self.hidden_text:
+            return
+        self.label.setText(self.hidden_text if full else self.shown_text)
+        self._chip_text(full)
 
     def fit(self, width: int) -> None:
         """Cap the one-line minimum to the space the chat has (narrow panes, side by side)."""
