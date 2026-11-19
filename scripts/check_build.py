@@ -18,8 +18,9 @@ EXE = ROOT / "dist" / "Orchestrator" / "Orchestrator.exe"
 
 ORCH_TOOLS = ["ask_user", "delegate", "find_projects", "find_sessions", "send_to_task", "suggest_preference",
               "task_status", "wait_for"]
-APP_TOOLS = ["cancel_schedule", "create_schedule", "list_preferences", "list_schedules", "list_settings",
-             "set_appearance", "set_model_preference", "set_setting"]
+APP_TOOLS = ["about_app", "cancel_schedule", "create_schedule", "get_usage", "list_models", "list_preferences",
+             "list_schedules", "list_settings", "set_appearance", "set_default_model", "set_model_preference",
+             "set_setting"]
 
 
 async def mcp_check(server: str = "") -> list[str]:
