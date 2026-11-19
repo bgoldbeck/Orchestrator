@@ -118,6 +118,7 @@ class ChatRowDelegate(TreeItemDelegate):
 
 class Sidebar(QFrame):
     sessionSelected = Signal(object)  # session id or None
+    sideBySideRequested = Signal(int)  # open this chat next to the current one
 
     def __init__(self, db: Database, manager: SessionManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -389,6 +390,9 @@ class Sidebar(QFrame):
             menu.addSeparator()
             menu.addAction(Action(FIF.REMOVE, "Remove from list", triggered=lambda: self._remove_project(iid)))
         else:
+            if iid != self.current_sid:
+                menu.addAction(Action(FIF.LAYOUT, "Open side by side",
+                                      triggered=lambda: self.sideBySideRequested.emit(iid)))
             menu.addAction(Action(FIF.DELETE, "Delete chat", triggered=lambda: self._delete_chat(iid)))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 

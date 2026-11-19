@@ -7,6 +7,7 @@ from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeyEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
+    Action,
     BodyLabel,
     CaptionLabel,
     CheckableMenu,
@@ -18,13 +19,14 @@ from qfluentwidgets import (
     PlainTextEdit,
     PrimaryPushButton,
     PrimaryToolButton,
+    RoundMenu,
     SmoothScrollArea,
     SubtitleLabel,
     TitleLabel,
     ToolButton,
-    TransparentToolButton,
     ToolTipFilter,
     TransparentDropDownPushButton,
+    TransparentToolButton,
 )
 
 from orchestrator.core import model_registry
@@ -252,6 +254,8 @@ class ChatView(QWidget):
     newChatRequested = Signal()
     addProjectRequested = Signal()
     openSettingsRequested = Signal()
+    sideBySideRequested = Signal(int)  # open this related chat in the side pane
+    closeRequested = Signal()  # side pane's close button
 
     def __init__(self, db: Database, manager: SessionManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -302,6 +306,18 @@ class ChatView(QWidget):
         self.diffBtn.installEventFilter(ToolTipFilter(self.diffBtn))
         self.diffBtn.clicked.connect(self.show_diff)
         hl.addWidget(self.diffBtn)
+        self.pairBtn = ToolButton(FIF.LAYOUT, self.header)
+        self.pairBtn.setToolTip("Side by side: open the orchestrator or one of its agents next to this chat")
+        self.pairBtn.installEventFilter(ToolTipFilter(self.pairBtn))
+        self.pairBtn.clicked.connect(self._pair_menu)
+        self.pairBtn.hide()
+        hl.addWidget(self.pairBtn)
+        self.closeBtn = ToolButton(FIF.CLOSE, self.header)
+        self.closeBtn.setToolTip("Close this side pane")
+        self.closeBtn.installEventFilter(ToolTipFilter(self.closeBtn))
+        self.closeBtn.clicked.connect(self.closeRequested.emit)
+        self.closeBtn.hide()
+        hl.addWidget(self.closeBtn)
         root.addWidget(self.header)
 
         # stream
@@ -451,6 +467,41 @@ class ChatView(QWidget):
         if self.session:
             self.show_session(self.session.id)
 
+    def _chat_width(self) -> int:
+        return min(CONTENT_MAX, max(200, self.scroll.viewport().width() - 48))
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        w = self._chat_width()
+        for m in self.column.findChildren(UserMessage):
+            m.fit(w)
+
+    def set_side(self, on: bool) -> None:
+        """This view is the side pane: show a close button."""
+        self.closeBtn.setVisible(on)
+
+    def related_chats(self) -> list[tuple[str, Session]]:
+        """(label, chat) pairs worth opening next to this one: its orchestrator, its sibling or child agents."""
+        s = self.session
+        if not s:
+            return []
+        out: list[tuple[str, Session]] = []
+        if s.parent_id:
+            parent = self.db.session(s.parent_id)
+            if parent:
+                out.append(("Orchestrator", parent))
+                out += [("Agent", c) for c in self.db.child_sessions(parent.id) if c.id != s.id]
+        out += [("Agent", c) for c in self.db.child_sessions(s.id)]
+        return out
+
+    def _pair_menu(self) -> None:
+        menu = RoundMenu(parent=self)
+        for label, c in self.related_chats():
+            icon = FIF.ROBOT if label == "Orchestrator" else FIF.CHAT
+            menu.addAction(Action(icon, f"{label}: {c.title}", triggered=lambda _=False, sid=c.id:
+                                  self.sideBySideRequested.emit(sid)))
+        menu.exec(self.pairBtn.mapToGlobal(self.pairBtn.rect().bottomLeft()))
+
     def show_session(self, sid: int | None) -> None:
         self._applied_cards = {}
         self.session = self.db.session(sid) if sid else None
@@ -472,6 +523,7 @@ class ChatView(QWidget):
             return
         proj = self.db.project(s.project_id)
         self.title.setText(s.title)
+        self.pairBtn.setVisible(bool(self.related_chats()))
         where = s.cwd or (proj.path if proj else "")
         self.path.setText(where + ("   ·   imported from engine history" if s.source == "imported" else ""))
         self.pill.set_value(s.engine, s.model or "", s.effort or "", locked=bool(s.engine_session_id))
@@ -523,6 +575,8 @@ class ChatView(QWidget):
                 item.widget().deleteLater()
 
     def _add(self, w: QWidget, animate: bool = True) -> None:
+        if isinstance(w, UserMessage):
+            w.fit(self._chat_width())
         self.stream.insertWidget(self.stream.count() - 1, w)
         if animate:
             fade_in(w)

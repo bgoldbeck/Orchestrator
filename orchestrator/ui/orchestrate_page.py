@@ -185,6 +185,7 @@ class TaskCard(QFrame):
         btns.setContentsMargins(26, 0, 0, 0)
         btns.setSpacing(2)
         openb = TransparentPushButton(FIF.CHAT, "Open chat", self)
+        openb.setToolTip("Opens this agent's chat next to the orchestrator's chat")
         openb.clicked.connect(lambda: self.openChat.emit(self.sid) if self.sid else None)
         btns.addWidget(openb)
         if t.status not in ("proposed", "queued"):
