@@ -205,6 +205,15 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   **Show orchestrator instructions** chip expands it.
 - Clicking an orchestration task on the Board opens it here too, next to its planner.
 
+## The agents know the app
+
+- Every chat gets the `app` tools, and they say they are running inside Orchestrator: **about_app** (what the app is,
+  its pages, source and data folders, this chat), **get_usage** (plan limits left and reset times for Claude and
+  Codex, the same numbers as the title-bar pills, plus tokens and cost per model), **list_models** and
+  **set_default_model** (what new chats start on), plus preference rules, settings, appearance and schedules.
+- The planner's prompt opens with who it is (Orchestrator's planner) and to use those tools for anything about
+  the app, so "how much Claude usage is left?" or "coding use GPT 6.2 medium" work without searching the disk.
+
 ## Attach files and images
 
 ![Attachments](docs/screenshots/attachments.png)

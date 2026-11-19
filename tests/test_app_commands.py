@@ -1,6 +1,7 @@
 """App commands from chat: model-name resolution, natural times, each tool, undo, confirmations, fast path, wiring."""
 import asyncio
 import os
+import time
 from datetime import datetime
 
 import pytest
@@ -282,8 +283,9 @@ def test_app_mcp_server_tools(env):
     async def names():
         return sorted(t.name for t in await server.list_tools())
 
-    assert run(env[4], names()) == ["cancel_schedule", "create_schedule", "list_preferences", "list_schedules",
-                                    "list_settings", "set_appearance", "set_model_preference", "set_setting"]
+    assert run(env[4], names()) == ["about_app", "cancel_schedule", "create_schedule", "get_usage", "list_models",
+                                    "list_preferences", "list_schedules", "list_settings", "set_appearance",
+                                    "set_default_model", "set_model_preference", "set_setting"]
 
 
 def test_bridge_round_trip(env):
@@ -311,3 +313,36 @@ def test_bridge_round_trip(env):
             else:
                 os.environ[k] = v
         ctl.bridge.stop()
+
+
+def test_about_usage_models_and_default(env, monkeypatch):
+    from orchestrator.core import usage as U
+
+    db, ctl, sid, runner, loop = env
+    about = run(loop, ctl.handle(sid, "about_app", {}))
+    assert about["app"] == "Orchestrator" and "Orchestrate" in about["about"]
+    assert about["this_chat"]["project"] == "weather-app" and about["this_chat"]["engine"] == "claude"
+    assert about["source_folder"].endswith(("orchestrator", "Orchestrator")) or "source" in about["source_folder"]
+    db.add_message(sid, "system", "usage", {"input": 1000, "output": 200, "cached": 5000, "cost": 0.05})
+    monkeypatch.setattr(U, "read_all", lambda _db: [U.ProviderUsage("claude", "Claude", [
+        U.Window("five_hour", "5-hour", used_percent=30, resets_at=time.time() + 7200)])])
+    use = run(loop, ctl.handle(sid, "get_usage", {"days": 7}))
+    w = use["plan_limits"][0]["windows"][0]
+    assert w["percent_left"] == 70 and w["resets"].startswith("in 1 h") or w["resets"].startswith("in 2 h")
+    spend = use["spend_last_7_days"][0]
+    assert spend["model"] == "claude-sonnet-5-5" and spend["input"] == 1000 and spend["cost_usd"] == 0.05
+    models = run(loop, ctl.handle(sid, "list_models", {}))
+    assert "claude" in models["engines"] and models["engines"]["claude"]["models"]
+    res = run(loop, ctl.handle(sid, "set_default_model", {"model": "haiku", "effort": "low"}))
+    assert db.default_model("claude") == ("claude-haiku-5-5", "low") and db.get_setting("last")[1] == "claude-haiku-5-5"
+    ctl.undo(res["change_id"])
+    assert db.default_model("claude")[0] != "claude-haiku-5-5"
+
+
+def test_planner_prompt_knows_the_app():
+    from orchestrator.core import orchestration as O
+    from orchestrator.core.prompt_display import split_prompt
+
+    full = O.ORCH_PROMPT.format(path="C:/x", goal="Ship it", max_parallel=4, models="-", guide="")
+    assert "inside Orchestrator" in full and "get_usage" in full and "set_model_preference" in full
+    assert split_prompt(full)[0] == "Ship it"

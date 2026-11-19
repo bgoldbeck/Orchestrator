@@ -526,6 +526,90 @@ class AppControl(QObject):
         return self._record(sid, f"Deleted schedule “{s.name}”", {"kind": "schedule_deleted", "data": data,
                                                                   "area": "schedules"}, "schedules")
 
+    # ---- about the app, usage and models
+    def op_about_app(self, sid) -> dict[str, Any]:
+        from orchestrator.storage.db import app_dir
+
+        src = app_source()
+        s = self.db.session(sid) if sid else None
+        proj = self.db.project(s.project_id) if s else None
+        return {
+            "app": "Orchestrator", "about": APP_ABOUT,
+            "source_folder": str(src) if src else "unknown (running from a build without its source next to it)",
+            "version": _git_commit(src) if src else "",
+            "data_folder": str(app_dir()), "database": str(self.db.path),
+            "this_chat": ({"id": s.id, "title": s.title, "engine": s.engine, "model": s.model, "effort": s.effort,
+                           "project": proj.name if proj else "", "folder": s.cwd or (proj.path if proj else "")}
+                          if s else None),
+            "usage_sources": USAGE_SOURCES,
+            "tools": "app tools: about_app, get_usage, list_models, set_default_model, list_preferences, "
+                     "set_model_preference, list_settings, set_setting, set_appearance, create_schedule, "
+                     "list_schedules, cancel_schedule. The planner also has the orchestrator tools (delegate, "
+                     "wait_for, ...).",
+        }
+
+    def op_get_usage(self, sid, days: Any = 7) -> dict[str, Any]:
+        from orchestrator.core import usage as U
+
+        now = time.time()
+        plans = []
+        for pu in U.read_all(self.db):
+            plans.append({"provider": pu.provider, "name": pu.name, "source": pu.source, "note": pu.note,
+                          "windows": [{"window": w.label, "percent_left": None if w.remaining_pct is None
+                                       else round(w.remaining_pct), "resets": _when(w.resets_at, now),
+                                       "resets_at": datetime.fromtimestamp(w.resets_at).isoformat(timespec="minutes")
+                                       if w.resets_at else "", "exact": w.exact, "estimate": w.estimate,
+                                       "status": w.status} for w in pu.windows]})
+        try:
+            days = max(1, min(90, int(days)))
+        except (TypeError, ValueError):
+            days = 7
+        since = now - days * 86400
+        per: dict[str, dict[str, Any]] = {}
+        rows = self.db.conn.execute(
+            "SELECT s.engine, s.model, m.content_json FROM messages m JOIN sessions s ON s.id=m.session_id "
+            "WHERE m.kind='usage' AND m.ts>=?", (since,))
+        import json as _json
+
+        for eng, model, cj in rows:
+            u = _json.loads(cj)
+            key = f"{eng}:{model or 'default'}"
+            d = per.setdefault(key, {"engine": eng, "model": model or "default", "turns": 0, "input": 0,
+                                     "cached": 0, "output": 0, "cost_usd": 0.0})
+            d["turns"] += 1
+            for k in ("input", "cached", "output"):
+                d[k] += int(u.get(k) or 0)
+            d["cost_usd"] += float(u.get("cost") or 0)
+        for d in per.values():
+            d["cost_usd"] = round(d["cost_usd"], 4)
+        return {"plan_limits": plans, f"spend_last_{days}_days": sorted(per.values(), key=lambda d: -d["cost_usd"]),
+                "how_it_is_read": USAGE_SOURCES,
+                "note": "Plan limits are what the title-bar pills show. Spend covers chats run from this app only."}
+
+    def op_list_models(self, sid) -> dict[str, Any]:
+        out = {}
+        for eng in ENGINES:
+            dm, de = self.db.default_model(eng)
+            out[eng] = {"default_for_new_chats": {"model": dm, "effort": de},
+                        "models": [{"id": m.id, "label": m.label, "efforts": m.efforts, "enabled": m.enabled}
+                                   for m in self.db.models(eng)]}
+        return {"engines": out, "preference_rules": self.op_list_preferences(sid)["rules"],
+                "note": "Preference rules decide which model the orchestrator picks for a kind of task "
+                        "(set_model_preference). The default is what a new chat starts on (set_default_model)."}
+
+    def op_set_default_model(self, sid, model: str, effort: str = "", engine: str = "") -> dict[str, Any]:
+        eng, mid = resolve_model(self.db, model, engine)
+        m = next(x for x in self.db.models(eng) if x.id == mid)
+        effort = (effort or "").strip().lower() or self.db.default_model(eng)[1]
+        if m.efforts and effort not in m.efforts:
+            effort = "medium" if "medium" in m.efforts else m.efforts[0]
+        key = f"default.{eng}"
+        before = {key: self.db.get_setting(key), "last": self.db.get_setting("last")}
+        self.db.set_setting(key, [mid, effort])
+        self.db.set_setting("last", [eng, mid, effort])
+        return self._record(sid, f"New chats start on {m.label} · {effort}",
+                            {"kind": "settings", "values": before, "area": "models"}, "models")
+
     # ---- safe settings + models
     def op_list_settings(self, sid) -> dict[str, Any]:
         out = {name: {"label": label, "value": self.db.get_setting(key), "allowed": allowed if allowed else "bool"
@@ -577,6 +661,68 @@ class AppControl(QObject):
         shown = "on" if v is True else "off" if v is False else v
         return self._record(sid, f"{label} → {shown}", {"kind": "settings", "values": {key: before},
                                                        "area": "settings"}, "settings")
+
+
+# ---------------------------------------------------------------- what the app is
+APP_ABOUT = (
+    "Orchestrator is a Windows desktop app (Python, PySide6 and PyQt-Fluent-Widgets) that runs Claude Code and Codex "
+    "chats side by side. Pages: Projects (folders), Chats (one agent per chat, any engine/model/effort), Orchestrate "
+    "(a planner chat splits a goal into tasks and runs Claude/Codex sub-agents, then reports back), Board (task "
+    "kanban), Waiting on you (questions and reviews), Schedules (run once later / repeat), MCP servers, Settings "
+    "(models, model preference rules, limits, appearance). The title bar shows plan usage pills for Claude and Codex "
+    "(percent left in the 5-hour and weekly windows, with reset times); the Usage page has their history. Chats are "
+    "also read from the engines' own logs (~/.claude/projects, ~/.codex/sessions)."
+)
+USAGE_SOURCES = {
+    "claude": "Claude: rate-limit events the Claude Code SDK reports on each turn (utilization and reset time); "
+              "between turns an estimate from the token counts in ~/.claude/projects logs.",
+    "codex": "Codex: the rate_limits block in the newest ~/.codex/sessions rollout files (used_percent, resets_in).",
+}
+
+
+def _git_commit(root) -> str:
+    try:
+        head = (root / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            ref = head.split(" ", 1)[1].strip()
+            f = root / ".git" / ref
+            if f.exists():
+                return f.read_text(encoding="utf-8").strip()[:7]
+            packed = root / ".git" / "packed-refs"
+            for line in packed.read_text(encoding="utf-8").splitlines() if packed.exists() else []:
+                if line.endswith(" " + ref):
+                    return line[:7]
+            return ""
+        return head[:7]
+    except OSError:
+        return ""
+
+
+def app_source():
+    """The app's source folder (the git checkout it was built from), or None."""
+    import sys
+    from pathlib import Path
+
+    from orchestrator.core.orchestration import APP_ROOT
+
+    cands = [APP_ROOT]
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        cands += [exe.parent, *exe.parents]
+    for c in cands:
+        if (c / "orchestrator" / "core" / "app_control.py").exists():
+            return c
+    return None
+
+
+def _when(ts: float | None, now: float) -> str:
+    if not ts:
+        return ""
+    d = ts - now
+    if d <= 0:
+        return "now"
+    h, m = int(d // 3600), int(d % 3600 // 60)
+    return (f"in {h // 24} d {h % 24} h" if h >= 24 else f"in {h} h {m} min" if h else f"in {m} min")
 
 
 # ---------------------------------------------------------------- local fast path

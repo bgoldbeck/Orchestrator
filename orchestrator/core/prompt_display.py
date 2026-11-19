@@ -7,7 +7,7 @@ Works on stored text, so chats started before this change are cleaned up too.
 """
 from __future__ import annotations
 
-ORCH_START = "You are the orchestrator for the project folder"
+ORCH_STARTS = ("You are the orchestrator for the project folder", "You are the orchestrator (planner) inside Orchestrator")
 GOAL_HEAD = "Goal from the user:\n"
 GOAL_END = "\n\nYou coordinate sub-agents"
 SUB_START = "You are a sub-agent started by an orchestrator."
@@ -19,7 +19,7 @@ CLOSING_START = "\n\nWhen you are finished, end your final message with this rep
 def split_prompt(text: str) -> tuple[str, str]:
     """Return (text to show, hidden instructions). Hidden is "" when there is nothing to hide."""
     t = text or ""
-    if t.startswith(ORCH_START) and GOAL_HEAD in t:
+    if t.startswith(ORCH_STARTS) and GOAL_HEAD in t:
         start = t.index(GOAL_HEAD) + len(GOAL_HEAD)
         end = t.find(GOAL_END, start)
         goal = t[start:end if end >= 0 else len(t)].strip()

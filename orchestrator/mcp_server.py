@@ -173,10 +173,40 @@ def build_app_server():
 
     server = MCPServer(
         "app",
-        instructions="Change the Orchestrator app's own settings when the user asks: model preferences, appearance "
-                     "(font size, theme, density, accent), schedules (run once / repeat), and a few safe settings. "
-                     "Each change is shown to the user with an Undo button. Only act on what the user asked.",
+        instructions="You are running inside Orchestrator, the user's Windows desktop app that runs Claude Code and "
+                     "Codex chats and orchestrations. \"The app\", \"this app\" or \"the orchestrator app\" means "
+                     "Orchestrator. These tools read and change it: about_app (what it is, its source and data "
+                     "folders, this chat), get_usage (plan limits left and reset times for Claude and Codex, spend "
+                     "per model), list_models / set_default_model, list_preferences / set_model_preference (which "
+                     "model to use for which kind of task, e.g. \"coding use GPT 6.2 medium\"), list_settings / "
+                     "set_setting, set_appearance and schedules. Use them before saying you can't see something "
+                     "about the app. Each change shows the user an Undo button; only change what the user asked.",
     )
+
+    @server.tool()
+    async def about_app() -> str:
+        """What Orchestrator is, its pages and features, its source folder and version, data folder, and this
+        chat's project, engine and model. Call this when the user asks about "the app" or how it works."""
+        return _dump(await bridge_call("about_app", {}, timeout=30))
+
+    @server.tool()
+    async def get_usage(days: int = 7) -> str:
+        """AI usage: plan limits per provider (percent left in the 5-hour and weekly windows, when they reset; the
+        same numbers as the title-bar pills) and tokens/cost per model for chats run in this app over `days`."""
+        return _dump(await bridge_call("get_usage", {"days": days}, timeout=60))
+
+    @server.tool()
+    async def list_models() -> str:
+        """Every model per engine (enabled or not, efforts), the default model new chats start on, and the model
+        preference rules."""
+        return _dump(await bridge_call("list_models", {}, timeout=30))
+
+    @server.tool()
+    async def set_default_model(model: str, effort: str = "", engine: str = "") -> str:
+        """Set the model (and effort) new chats start on, e.g. "use sonnet 5.5 low by default". To pick a model
+        for a kind of task instead, use set_model_preference."""
+        return _dump(await bridge_call("set_default_model", {"model": model, "effort": effort, "engine": engine},
+                                       timeout=30))
 
     @server.tool()
     async def set_model_preference(task_type: str, model: str, effort: str = "", keywords: list[str] | None = None,
