@@ -174,6 +174,8 @@ def test_title_text_cleanup():
 
     assert clean('<wake reason="m"><message>why is my patch server down? <attachment kind="image" '
                  'path="a.png"/></message></wake>') == "why is my patch server down?"
+    assert title_text('<project_claude_message session="s1" from="x">Please check the build log</project_claude_message>'
+                      ) == "Please check the build log"
 
 
 def test_reuse_card_question_box_and_auto_planner(env, qapp):

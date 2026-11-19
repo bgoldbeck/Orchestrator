@@ -26,15 +26,19 @@ NOISE_PREFIXES = ("<command-", "<local-command", "<system-reminder", "<environme
                   "<permissions", "Caveat:", "<ide_", "[Request interrupted")
 
 
-PARSER_VERSION = 3  # bump to re-parse every file once (titles derived differently)
+PARSER_VERSION = 4  # bump to re-parse every file once (titles derived differently)
 _UPLOAD_REF = re.compile(r'^\s*@(?:"[^"]*"|\S+)\s*')
 _PATH_LINE = re.compile(r'^\s*"?(?:[A-Za-z]:[\\/]|\\\\|/|~[\\/])[^\n]*$')
-APP_MARKERS = ("<wake", "<relay", "&lt;wake", "&lt;relay")
+APP_MARKERS = ("<wake", "<relay", "&lt;wake", "&lt;relay", "<project_claude_message", "<cross-session-message",
+               "<coordinator-relay", "&lt;project_claude_message")
+_ANY_TAG = re.compile(r"</?[A-Za-z][\w:-]*(?:\s[^<>]*)?/?>")
 
 
 def title_text(text: str) -> str:
     """The person's first words, readable: no HTML entities, no leading @"upload" refs, no path-only lines."""
     t = html.unescape(text or "").strip()
+    if t.startswith("<"):  # any other wrapper a harness put around the words: keep the words, drop the tags
+        t = _ANY_TAG.sub(" ", t).strip()
     while True:
         m = _UPLOAD_REF.match(t)
         if not m or not m.group(0).strip():
