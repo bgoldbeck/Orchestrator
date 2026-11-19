@@ -187,6 +187,16 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - **Add server** (command or URL, optional environment) and the bin button run `claude mcp add/remove` and
   `codex mcp add/remove`, so the CLIs see the same servers. Plugin servers can only be turned off.
 
+## Orchestrate workspace
+
+![Orchestrate workspace](docs/screenshots/orch-workspace.png)
+
+- While a run is open, the **planner chat stays on the left** and you keep talking to it. Nothing jumps to Chats.
+- The right pane lists the run's tasks as **Waiting on you**, **Working**, **Queued** and **Done**, one line of
+  status each. Click a task to open its chat in that pane (× goes back). **Details** has the full run page
+  (models, queue order, questions, Stop all, history); **+** starts a new goal.
+- Clicking an orchestration task on the Board opens it here too, next to its planner.
+
 ## Schedules: readable buttons, easy times
 
 ![Run once](docs/screenshots/schedules-custom.png)

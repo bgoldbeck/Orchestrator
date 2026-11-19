@@ -477,6 +477,9 @@ class ChatView(QWidget):
 
     def resizeEvent(self, e) -> None:  # noqa: N802
         super().resizeEvent(e)
+        QTimer.singleShot(0, self._refit)
+
+    def _refit(self) -> None:
         w = self._chat_width()
         for m in self.column.findChildren(UserMessage):
             m.fit(w)
