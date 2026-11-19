@@ -14,6 +14,7 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition,
     MessageBox,
+    PillPushButton,
     PrimaryPushButton,
     RoundMenu,
     SearchLineEdit,
@@ -28,7 +29,15 @@ from orchestrator.core.catalog import ENGINES
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database
 from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, palette
-from orchestrator.ui_text import age
+from orchestrator.ui_text import age, short_title
+
+# Sections inside a project, in order. "app": sessions started from the Claude app or Remote Control.
+SECTIONS = [("orch", "Orchestrate"), ("mine", "Your chats"), ("history", "From Claude Code & Codex"),
+            ("app", "Claude app & remote sessions")]
+FILTERS = [("all", "All"), ("mine", "Mine"), ("orch", "Runs"), ("history", "History")]
+FILTER_SECTIONS = {"all": {"orch", "mine", "history", "app"}, "mine": {"mine"}, "orch": {"orch"},
+                   "history": {"history", "app"}}
+HISTORY_SHOWN = 3  # newest history chats shown before "Show older"
 
 ROLE_KIND = Qt.UserRole
 ROLE_ID = Qt.UserRole + 1
@@ -49,12 +58,15 @@ class ChatRowDelegate(TreeItemDelegate):
         sz = super().sizeHint(option, index)
         from orchestrator.ui.theme import compact
 
-        return QSize(sz.width(), (26 if compact() else 30) if index.data(ROLE_KIND) == "header"
+        kind = index.data(ROLE_KIND)
+        if kind in ("section", "more"):
+            return QSize(sz.width(), 22 if compact() else 26)
+        return QSize(sz.width(), (26 if compact() else 30) if kind == "header"
                      else (26 if compact() else 32))
 
     def initStyleOption(self, option, index) -> None:  # noqa: N802
         super().initStyleOption(option, index)
-        if index.data(ROLE_KIND) in ("session", "header"):
+        if index.data(ROLE_KIND) in ("session", "header", "section", "more"):
             option.text = ""
             option.icon = QIcon()
 
@@ -69,6 +81,30 @@ class ChatRowDelegate(TreeItemDelegate):
             f.setLetterSpacing(QFont.AbsoluteSpacing, 1)
             painter.setFont(f)
             painter.drawText(option.rect.adjusted(4, 8, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, index.data(ROLE_TITLE))
+            painter.restore()
+            return
+        if kind == "section":
+            painter.save()
+            r = option.rect
+            f = QFont(option.font)
+            f.setPointSizeF(7.5)
+            f.setBold(True)
+            f.setLetterSpacing(QFont.AbsoluteSpacing, 0.6)
+            painter.setFont(f)
+            painter.setPen(QColor(palette()["muted"]))
+            painter.drawText(QRectF(r.x() + 2, r.y(), r.width() - 30, r.height()), Qt.AlignLeft | Qt.AlignVCenter,
+                             (index.data(ROLE_TITLE) or "").upper())
+            painter.setPen(QColor(palette()["faint"]))
+            painter.drawText(QRectF(r.right() - 40, r.y(), 26, r.height()), Qt.AlignRight | Qt.AlignVCenter,
+                             str(index.data(ROLE_AGE) or ""))
+            painter.restore()
+            return
+        if kind == "more":
+            painter.save()
+            from qfluentwidgets import themeColor
+
+            painter.setPen(themeColor())
+            painter.drawText(option.rect.adjusted(24, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, index.data(ROLE_TITLE))
             painter.restore()
             return
         super().paint(painter, option, index)
@@ -140,8 +176,25 @@ class Sidebar(QFrame):
 
         self.search = SearchLineEdit(self)
         self.search.setPlaceholderText("Search chats")
-        self.search.textChanged.connect(self._filter)
+        self.search.textChanged.connect(lambda _t: self.reload_soon())
         lay.addWidget(self.search)
+
+        self.filter = db.get_setting("sidebar.filter", "all")
+        self.sec_open: dict[str, bool] = {}  # "<project id>:<section>" -> expanded
+        self.show_all: set[str] = set()  # sections showing every history chat
+        chips = QHBoxLayout()
+        chips.setSpacing(4)
+        self.chips: dict[str, PillPushButton] = {}
+        for key, label in FILTERS:
+            b = PillPushButton(label, self)
+            b.setCheckable(True)
+            b.setChecked(key == self.filter)
+            b.setFixedHeight(24)
+            b.clicked.connect(lambda _=False, k=key: self.set_filter(k))
+            chips.addWidget(b)
+            self.chips[key] = b
+        chips.addStretch(1)
+        lay.addLayout(chips)
 
         head = QHBoxLayout()
         lbl = CaptionLabel("PROJECTS", self)
@@ -198,12 +251,29 @@ class Sidebar(QFrame):
             self._reload_timer.timeout.connect(self.reload)
         self._reload_timer.start(150)
 
+    def set_filter(self, key: str) -> None:
+        self.filter = key
+        self.db.set_setting("sidebar.filter", key)
+        for k, b in self.chips.items():
+            b.setChecked(k == key)
+        self.reload()
+
+    def section_of(self, s, planners: dict[int, str]) -> str:
+        if s.id in planners:
+            return "orch"
+        if s.source == "imported":
+            return "app" if s.origin == "app" else "history"
+        return "mine"
+
     def reload(self) -> None:
         expanded = {self.tree.topLevelItem(i).data(0, ROLE_ID) for i in range(self.tree.topLevelItemCount())
                     if self.tree.topLevelItem(i).isExpanded()}
         expanded_sessions = {it.data(0, ROLE_ID) for it in self._session_items() if it.isExpanded()}
         first = self.tree.topLevelItemCount() == 0
         scroll = self.tree.verticalScrollBar().value()
+        searching = bool(self.search.text().strip())
+        wanted = FILTER_SECTIONS.get(self.filter, FILTER_SECTIONS["all"])
+        cur = self.db.session(self.current_sid) if self.current_sid else None
         self.tree.clear()
         header_added = False
         for proj in self.db.projects():
@@ -214,36 +284,72 @@ class Sidebar(QFrame):
                 hi.setFlags(Qt.NoItemFlags)
                 self.tree.addTopLevelItem(hi)
                 header_added = True
+            sessions = self.db.sessions(proj.id)
             pi = QTreeWidgetItem([proj.name])
             pi.setIcon(0, (FIF.HISTORY if proj.auto else FIF.FOLDER).icon())
             pi.setData(0, ROLE_KIND, "project")
             pi.setData(0, ROLE_ID, proj.id)
-            pi.setToolTip(0, proj.path)
+            pi.setToolTip(0, f"{proj.path}\n{len(sessions)} chats")
             self.tree.addTopLevelItem(pi)
-            sessions = self.db.sessions(proj.id)
             ids = {s.id for s in sessions}
+            planners = {o.session_id: o.goal for o in self.db.orchestrations(proj.id) if o.session_id}
             kids: dict[int, list] = {}
+            groups: dict[str, list] = {k: [] for k, _ in SECTIONS}
             for sess in sessions:  # sub-agent chats nest under their orchestrator chat
                 if sess.parent_id and sess.parent_id in ids:
                     kids.setdefault(sess.parent_id, []).append(sess)
-            for sess in sessions:
-                if sess.parent_id and sess.parent_id in ids:
+                else:
+                    groups[self.section_of(sess, planners)].append(sess)
+            for key, label in SECTIONS:
+                items = groups[key]
+                if not items or key not in wanted:
                     continue
-                ci = self._session_item(sess)
-                pi.addChild(ci)
-                for sub in sorted(kids.get(sess.id, []), key=lambda x: x.id):
-                    ci.addChild(self._session_item(sub))
-                ci.setExpanded(sess.id in expanded_sessions or any(
-                    ci.child(i).data(0, ROLE_ID) == self.current_sid for i in range(ci.childCount())))
-            pi.setExpanded((first and not proj.auto) or proj.id in expanded or self._contains(pi, self.current_sid))
+                skey = f"{proj.id}:{key}"
+                has_cur = cur is not None and any(x.id == cur.id or x.id == cur.parent_id for x in items)
+                is_open = searching or has_cur or self.sec_open.get(skey, key != "app")
+                si = QTreeWidgetItem([label])
+                si.setData(0, ROLE_KIND, "section")
+                si.setData(0, ROLE_ID, skey)
+                si.setData(0, ROLE_TITLE, label)
+                si.setData(0, ROLE_AGE, len(items))
+                si.setData(0, ROLE_STATUS, is_open)
+                pi.addChild(si)
+                limit = len(items)
+                if key in ("history", "app") and not searching and skey not in self.show_all:
+                    limit = HISTORY_SHOWN
+                    if cur is not None:  # keep the open chat visible
+                        idx = next((i for i, x in enumerate(items) if x.id == cur.id), -1)
+                        limit = max(limit, idx + 1)
+                for sess in items[:limit]:
+                    ci = self._session_item(sess, planners.get(sess.id))
+                    si.addChild(ci)
+                    for sub in sorted(kids.get(sess.id, []), key=lambda x: x.id):
+                        ci.addChild(self._session_item(sub))
+                    ci.setExpanded(sess.id in expanded_sessions or any(
+                        ci.child(i).data(0, ROLE_ID) == self.current_sid for i in range(ci.childCount())))
+                if len(items) > limit:
+                    mi = QTreeWidgetItem([""])
+                    mi.setData(0, ROLE_KIND, "more")
+                    mi.setData(0, ROLE_ID, skey)
+                    mi.setData(0, ROLE_TITLE, f"Show {len(items) - limit} older…")
+                    si.addChild(mi)
+                si.setExpanded(is_open)
+            mine_open = (cur is not None and cur.project_id == proj.id) or (cur is None and first and not proj.auto
+                                                                                 and not expanded)
+            pi.setExpanded(proj.id in expanded or mine_open or self._contains(pi, self.current_sid) or searching)
+            if first and pi.isExpanded():
+                first = False  # only the first project opens on the first load
         self._filter(self.search.text())
         self.tree.verticalScrollBar().setValue(scroll)
 
-    def _session_item(self, sess) -> QTreeWidgetItem:
+    def _session_item(self, sess, goal: str | None = None) -> QTreeWidgetItem:
         ci = QTreeWidgetItem([sess.title])
         ci.setData(0, ROLE_KIND, "session")
         ci.setData(0, ROLE_ID, sess.id)
         self._decorate(ci, sess)
+        if goal:  # a planner chat reads as its goal
+            ci.setData(0, ROLE_TITLE, short_title(goal))
+            ci.setText(0, goal)
         if sess.id == self.current_sid:
             self.tree.setCurrentItem(ci)
         return ci
@@ -307,26 +413,34 @@ class Sidebar(QFrame):
 
     def _filter(self, text: str) -> None:
         t = text.strip().lower()
+
+        def visit(item: QTreeWidgetItem) -> bool:
+            kind = item.data(0, ROLE_KIND)
+            kids = [visit(item.child(j)) for j in range(item.childCount())]
+            if kind == "session":
+                vis = not t or t in item.text(0).lower() or any(kids)
+            elif kind == "section":
+                vis = any(kids) or not t
+            elif kind == "more":
+                vis = not t
+            else:
+                vis = True
+            item.setHidden(not vis)
+            return vis
+
         for i in range(self.tree.topLevelItemCount()):
             pi = self.tree.topLevelItem(i)
-            any_vis = False
             if pi.data(0, ROLE_KIND) == "header":
                 pi.setHidden(bool(t))
                 continue
-            for j in range(pi.childCount()):
-                ch = pi.child(j)
-                vis = not t or t in ch.text(0).lower() or any(t in ch.child(k).text(0).lower() for k in range(ch.childCount()))
-                ch.setHidden(not vis)
-                any_vis |= vis
+            any_vis = any([visit(pi.child(j)) for j in range(pi.childCount())])
             pi.setHidden(bool(t) and not any_vis and t not in pi.text(0).lower())
-            if t and any_vis:
-                pi.setExpanded(True)
 
     # ---- actions
     def selected_project_id(self) -> int | None:
         item = self.tree.currentItem()
         if item:
-            while item.parent() is not None and item.data(0, ROLE_KIND) == "session":
+            while item.parent() is not None and item.data(0, ROLE_KIND) != "project":
                 item = item.parent()
             return item.data(0, ROLE_ID)
         projects = self.db.projects()
@@ -372,7 +486,18 @@ class Sidebar(QFrame):
         self.sessionSelected.emit(sid)
 
     def _clicked(self, item: QTreeWidgetItem, _col: int) -> None:
-        if item.data(0, ROLE_KIND) == "session":
+        kind = item.data(0, ROLE_KIND)
+        if kind == "section":
+            key = item.data(0, ROLE_ID)
+            self.sec_open[key] = not item.isExpanded()
+            item.setExpanded(self.sec_open[key])
+            item.setData(0, ROLE_STATUS, self.sec_open[key])
+            return
+        if kind == "more":
+            self.show_all.add(item.data(0, ROLE_ID))
+            self.reload()
+            return
+        if kind == "session":
             sid = item.data(0, ROLE_ID)
             if sid != self.current_sid:
                 self.select(sid)
@@ -383,6 +508,8 @@ class Sidebar(QFrame):
             return
         menu = RoundMenu(parent=self)
         kind, iid = item.data(0, ROLE_KIND), item.data(0, ROLE_ID)
+        if kind in ("section", "more", "header"):
+            return
         if kind == "project":
             menu.addAction(Action(FIF.ADD, "New chat here", triggered=lambda: self.new_chat(iid)))
             proj = self.db.project(iid)

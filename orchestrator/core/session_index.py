@@ -74,10 +74,13 @@ class SessionIndexer(QObject):
 
     async def _run(self) -> None:
         try:
-            known = {**self.db.indexed_files(), **self._skipped}
+            fresh = self.db.get_setting("index.parser_version") != ix.PARSER_VERSION
+            known = {} if fresh else {**self.db.indexed_files(), **self._skipped}
             infos = await asyncio.to_thread(scan_changed, known)
             if self.apply(infos):
                 self.changed.emit()
+            if fresh:  # every file re-parsed once with the current title rules
+                self.db.set_setting("index.parser_version", ix.PARSER_VERSION)
         except Exception as exc:  # indexing must never take the app down
             print("indexer error:", exc)
         finally:

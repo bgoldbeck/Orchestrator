@@ -143,3 +143,24 @@ def test_age_and_paths():
     assert age(1000, now=1030) == "now" and age(1000, now=1000 + 7200) == "2h" and age(0) == ""
     assert _under(r"D:\Demo\api-server", r"D:\Demo") and _under(r"d:\demo", "D:\\Demo\\")
     assert not _under(r"D:\Demo2", r"D:\Demo")
+
+
+def test_claude_session_started_from_app_is_marked(tmp_path):
+    import json
+
+    from orchestrator.core.indexer import parse_claude_file
+
+    f = tmp_path / "11111111-2222-3333-4444-555555555555.jsonl"
+    rows = [
+        {"type": "queue-operation", "operation": "enqueue",
+         "content": '@"C:\\up\\a.png" <wake reason="mention"><message from="human">i think we should make presets'
+                    '</message></wake>'},
+        {"type": "user", "sessionId": "s1", "cwd": "D:\\x", "timestamp": "2026-11-16T05:41:50Z",
+         "message": {"role": "user", "content": '<relay from="coordinator"><note>ctx</note></relay>'}},
+        {"type": "user", "sessionId": "s1", "timestamp": "2026-11-16T05:42:00Z",
+         "message": {"role": "user", "content": '<wake reason="mention"><message>i think we should make presets'
+                                                '</message></wake>'}},
+    ]
+    f.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    info = parse_claude_file(f)
+    assert info.origin == "app" and info.title == "i think we should make presets"

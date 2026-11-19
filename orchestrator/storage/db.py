@@ -97,6 +97,7 @@ MIGRATIONS = [
     ("tasks", "merge_note", "TEXT"),
     ("tasks", "hold_json", "TEXT"),  # why a queued task is held for the user (e.g. a dependency failed)
     ("questions", "recommended", "TEXT"),
+    ("sessions", "origin", "TEXT"),  # imported: "app" when started from the Claude app / Remote Control
 ]
 
 
@@ -130,6 +131,7 @@ class Session:
     summary: str | None = None
     keywords: str | None = None
     summary_updated_at: float | None = None
+    origin: str | None = None
 
 
 SCHEDULE_FIELDS = ("name", "project_id", "prompt", "engine", "model", "effort", "kind", "cron", "run_at",
@@ -350,7 +352,7 @@ class Database:
     def _sess(r: sqlite3.Row) -> Session:
         return Session(r["id"], r["project_id"], r["engine"], r["engine_session_id"], r["title"],
                        r["model"], r["effort"], r["status"], r["last_active"], r["source"], r["file_path"], r["cwd"],
-                       r["parent_id"], r["summary"], r["keywords"], r["summary_updated_at"])
+                       r["parent_id"], r["summary"], r["keywords"], r["summary_updated_at"], r["origin"])
 
     def sessions(self, project_id: int) -> list[Session]:
         return [self._sess(r) for r in self.conn.execute(
@@ -418,7 +420,8 @@ class Database:
         """Insert or refresh an imported session. Returns (session id, created)."""
         s = self.session_by_engine_id(info.engine, info.session_id)
         if s:
-            fields = {"file_path": info.path, "file_mtime": info.mtime, "cwd": info.cwd}
+            fields = {"file_path": info.path, "file_mtime": info.mtime, "cwd": info.cwd,
+                      "origin": getattr(info, "origin", "") or None}
             if s.source == "imported":
                 fields.update(title=info.title, last_active=max(s.last_active, info.last_active))
                 if not s.model and info.model:
@@ -427,9 +430,10 @@ class Database:
             return s.id, False
         cur = self.conn.execute(
             "INSERT INTO sessions(project_id,engine,engine_session_id,title,status,source,last_active,file_path,"
-            "file_mtime,cwd,model,effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "file_mtime,cwd,model,effort,origin) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (project_id, info.engine, info.session_id, info.title, "idle", "imported", info.last_active,
-             info.path, info.mtime, info.cwd, info.model or None, info.effort or None))
+             info.path, info.mtime, info.cwd, info.model or None, info.effort or None,
+             getattr(info, "origin", "") or None))
         self.conn.commit()
         return cur.lastrowid, True  # type: ignore[return-value]
 

@@ -112,8 +112,11 @@ def test_sidebar_nests_subagent_chats(env, qapp):
     sb = Sidebar(db, mgr)
     sb.reload()
     pi = sb.tree.topLevelItem(0)
-    planner = next(pi.child(i) for i in range(pi.childCount()))
+    sec = pi.child(0)
+    assert sec.data(0, 0x0100) == "section" and sec.data(0, 0x0101).endswith(":orch")
+    planner = sec.child(0)
     assert planner.data(0, 0x0101) == o.session_id  # ROLE_ID
+    assert planner.data(0, 0x0105) == "g"  # shown by its goal
     assert planner.childCount() == 1 and planner.child(0).text(0) == "Child"
     assert sb._find(db.task(tid).session_id) is planner.child(0)
     # leaving a sub-agent chat that has no messages yet must not delete it
@@ -121,6 +124,52 @@ def test_sidebar_nests_subagent_chats(env, qapp):
     sb.current_sid = sid
     sb.select(None)
     assert db.session(sid) is not None
+
+
+def test_sidebar_sections_filters_and_history_limit(env, qapp):
+    from types import SimpleNamespace
+
+    from orchestrator.ui.sidebar import Sidebar
+
+    db, proj, mgr, om, loop = env
+    mgr.any_running = lambda: False
+    mine = db.create_session(proj.id, "claude", "claude-opus-5-5", "medium", title="My chat")
+    for i in range(5):
+        info = SimpleNamespace(engine="claude", session_id=f"h{i}", title=f"Hist {i}", last_active=100.0 + i,
+                               path=f"/x/{i}.jsonl", mtime=1.0, cwd=proj.path, model="", effort="",
+                               origin="app" if i == 4 else "")
+        db.upsert_imported(info, proj.id)
+    sb = Sidebar(db, mgr)
+    sb.set_filter("all")
+    pi = sb.tree.topLevelItem(0)
+    secs = {pi.child(i).data(0, 0x0101).split(":")[1]: pi.child(i) for i in range(pi.childCount())}
+    assert list(secs) == ["mine", "history", "app"]
+    assert secs["mine"].child(0).data(0, 0x0101) == mine.id
+    hist = secs["history"]
+    assert hist.data(0, 0x0104) == 4 and hist.childCount() == 4  # 3 newest + "Show 1 older…"
+    assert hist.child(3).data(0, 0x0100) == "more"
+    assert not secs["app"].isExpanded()  # Claude app / remote sessions start folded
+    sb._clicked(hist.child(3), 0)
+    pi = sb.tree.topLevelItem(0)
+    assert pi.child(1).childCount() == 4  # all history now
+    sb.set_filter("mine")
+    pi = sb.tree.topLevelItem(0)
+    assert pi.childCount() == 1 and pi.child(0).data(0, 0x0101).endswith(":mine")
+    sb.set_filter("all")
+    sb.search.setText("hist 1")
+    sb.reload()
+    pi = sb.tree.topLevelItem(0)
+    visible = [pi.child(i) for i in range(pi.childCount()) if not pi.child(i).isHidden()]
+    assert [v.data(0, 0x0101).split(":")[1] for v in visible] == ["history"]
+
+
+def test_title_text_cleanup():
+    from orchestrator.core.indexer import title_text
+
+    assert title_text('@"C:\\u\\a.png" fix the lighting') == "fix the lighting"
+    assert title_text("C:\\Users\\b\\Arcanium\nread player.log") == "read player.log"
+    assert title_text("see &#34;build failed&#34;") == 'see "build failed"'
+    assert title_text("D:\\Games\\shot.png") == "File: shot.png"
 
 
 def test_reuse_card_question_box_and_auto_planner(env, qapp):

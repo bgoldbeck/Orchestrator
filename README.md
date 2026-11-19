@@ -214,6 +214,17 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - The planner's prompt opens with who it is (Orchestrator's planner) and to use those tools for anything about
   the app, so "how much Claude usage is left?" or "coding use GPT 6.2 medium" work without searching the disk.
 
+## Chat list: sections and clean titles
+
+![Chat list](docs/screenshots/chats-sidebar.png)
+
+- Each project groups its chats: **Orchestrate** (runs named by their goal, agents folded under them),
+  **Your chats**, **From Claude Code & Codex** (3 newest, then "Show older…") and **Claude app & remote sessions**
+  (started from the Claude app or Remote Control; folded by default). Click a section name to fold it.
+- Chips under search: **All**, **Mine**, **Runs**, **History**. Search looks through every chat, folded or not.
+- Imported titles skip harness markup, leading `@"upload"` references, HTML entities and path-only first lines
+  (a lone path becomes "File: name"). Every session file is re-read once after an update so old titles are fixed.
+
 ## Attach files and images
 
 ![Attachments](docs/screenshots/attachments.png)

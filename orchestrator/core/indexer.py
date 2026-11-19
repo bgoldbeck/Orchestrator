@@ -8,6 +8,7 @@ tolerant: unknown lines are skipped, nothing is ever written back.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -25,6 +26,32 @@ NOISE_PREFIXES = ("<command-", "<local-command", "<system-reminder", "<environme
                   "<permissions", "Caveat:", "<ide_", "[Request interrupted")
 
 
+PARSER_VERSION = 2  # bump to re-parse every file once (titles derived differently)
+_UPLOAD_REF = re.compile(r'^\s*@(?:"[^"]*"|\S+)\s*')
+_PATH_LINE = re.compile(r'^\s*"?(?:[A-Za-z]:[\\/]|\\\\|/|~[\\/])[^\n]*$')
+APP_MARKERS = ("<wake", "<relay", "&lt;wake", "&lt;relay")
+
+
+def title_text(text: str) -> str:
+    """The person's first words, readable: no HTML entities, no leading @"upload" refs, no path-only lines."""
+    t = html.unescape(text or "").strip()
+    while True:
+        m = _UPLOAD_REF.match(t)
+        if not m or not m.group(0).strip():
+            break
+        t = t[m.end():]
+    lines = [ln for ln in t.splitlines() if ln.strip()]
+    paths = []
+    while lines and _PATH_LINE.match(lines[0]) and len(lines[0]) < 260:
+        paths.append(lines.pop(0).strip().strip('"'))
+    if lines:
+        return "\n".join(lines)
+    if paths:
+        name = paths[0].replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        return f"File: {name}" if name else paths[0]
+    return t
+
+
 @dataclass
 class SessionInfo:
     engine: str
@@ -38,6 +65,7 @@ class SessionInfo:
     turns: int = 0
     model: str = ""
     effort: str = ""
+    origin: str = ""  # "app": started from the Claude app / Remote Control / a project (wake or relay envelopes)
 
 
 def claude_root() -> Path:
@@ -114,9 +142,14 @@ def parse_claude_file(path: Path) -> SessionInfo | None:
     first_ts = last_ts = None
     turns = 0
     model = ""
+    origin = ""
     for d in _lines(path):
         t = d.get("type")
         sid = sid or d.get("sessionId")
+        if not origin and t in ("queue-operation", "user"):
+            raw = d.get("content") if t == "queue-operation" else _text_of((d.get("message") or {}).get("content"))
+            if isinstance(raw, str) and any(m in raw[:4000] for m in APP_MARKERS):
+                origin = "app"
         if t == "assistant" and isinstance(d.get("message"), dict) and d["message"].get("model"):
             m = str(d["message"]["model"])
             model = model if m.startswith("<") else m
@@ -135,7 +168,7 @@ def parse_claude_file(path: Path) -> SessionInfo | None:
             text = clean(_text_of((d.get("message") or {}).get("content")))
             if text and not is_noise(text):
                 turns += 1
-                first_user = first_user or text
+                first_user = first_user or title_text(text)
     if not sid:
         m = UUID_RE.search(path.name)
         sid = m.group(1) if m else None
@@ -143,7 +176,8 @@ def parse_claude_file(path: Path) -> SessionInfo | None:
         return None
     st = path.stat()
     return SessionInfo("claude", sid, cwd or "", short_title(title or summary or first_user),
-                       first_ts or st.st_mtime, last_ts or st.st_mtime, str(path), st.st_mtime, turns, model)
+                       first_ts or st.st_mtime, last_ts or st.st_mtime, str(path), st.st_mtime, turns, model,
+                       origin=origin)
 
 
 def load_claude_history(path: Path) -> list[dict[str, Any]]:
@@ -272,7 +306,7 @@ def parse_codex_file(path: Path, titles: dict[str, str] | None = None) -> Sessio
     if not sid or not first_user:
         return None
     st = path.stat()
-    title = clean((titles or {}).get(sid) or "") or first_user
+    title = clean((titles or {}).get(sid) or "") or title_text(first_user)
     return SessionInfo("codex", sid, cwd or "", short_title(title), first_ts or st.st_mtime,
                        last_ts or st.st_mtime, str(path), st.st_mtime, max(turns, 1), model, effort)
 
