@@ -97,3 +97,17 @@ def test_settings_page_has_appearance(db, qapp):
 
     page = SettingsPage(db)
     assert page.appearance.preview.objectName() == "appearancePreview"
+
+
+def test_main_font_size_moves_chat_text():
+    from orchestrator.ui import appearance as A
+
+    look = A.Look()
+    old = look.ui_size
+    look.ui_size = 12.0
+    A.follow_ui_size(look, old)
+    assert look.chat_size == 12.0 and look.code_size == 11.0  # moved up ~2 pt, snapped to offered sizes
+    look2 = A.Look(chat_size=14.0)
+    look2.ui_size = 14.0
+    A.follow_ui_size(look2, 10.0)
+    assert look2.chat_size == 16.0  # clamps to the nearest offered size
