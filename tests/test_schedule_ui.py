@@ -1,5 +1,6 @@
 """Schedule UI: readable buttons at any width, easy time picking, plain-words times."""
 import os
+import re
 import time
 from datetime import datetime, timedelta
 
@@ -40,7 +41,8 @@ def test_when_picker_custom_time(qapp):
     w.set_when(target)
     assert w.buttons["Custom"].isChecked() and not w.customRow.isHidden()
     assert w.when() == target and w.time.currentText() == "6:30 PM"
-    assert "at 6:30 PM, in 2 days" in w.words.text()
+    # "in 2 days", "in 3 days" or "in 47 hours" depending on the time of day the test runs
+    assert re.search(r"at 6:30 PM, in \d+ (days|hours)$", w.words.text())
 
 
 def test_schedules_page_fits_narrow_window(qapp, tmp_path, monkeypatch):
