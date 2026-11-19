@@ -13,6 +13,7 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     FluentIcon as FIF,
+    PrimaryPushButton,
     PushButton,
     SmoothScrollArea,
     StrongBodyLabel,
@@ -23,10 +24,12 @@ from qfluentwidgets import (
 from orchestrator.core import usage as U
 from orchestrator.core.scheduler import plain_when
 from orchestrator.storage.db import Database
-from orchestrator.ui.theme import palette
+from orchestrator.ui.theme import palette, ui_pt, ui_ptf
 
 LEVEL_COLORS = {"green": "#3fb950", "amber": "#f5b544", "red": "#f85149", "unknown": "#6e7681"}
 REFRESH_MS = 120_000
+LOGIN_POLL_MS = 3000
+LOGIN_WAIT_MS = 10 * 60_000
 
 
 def qcolor(css: str) -> QColor:
@@ -87,7 +90,7 @@ class UsagePill(QWidget):
 
     def sizeHint(self) -> QSize:  # noqa: N802
         f = QFont(self.font())
-        f.setPointSizeF(8.5)
+        f.setPointSizeF(ui_ptf(8.5))
         from PySide6.QtGui import QFontMetrics
 
         fm = QFontMetrics(f)
@@ -125,7 +128,7 @@ class UsagePill(QWidget):
         p.setPen(qcolor(pal["border"]))
         p.drawPath(path)
         f = QFont(self.font())
-        f.setPointSizeF(8.5)
+        f.setPointSizeF(ui_ptf(8.5))
         p.setFont(f)
         p.setPen(qcolor(pal["muted"]))
         text_w = p.fontMetrics().horizontalAdvance(self.name)
@@ -194,7 +197,13 @@ class UsageBar(QWidget):
     def refresh_soon(self, ms: int = 1500) -> None:
         self._soon.start(ms)
 
-    def refresh(self) -> None:
+    def refresh(self, force: bool = False) -> None:
+        """Re-read usage. `force` asks the Claude account endpoint now instead of using the 5-minute cache."""
+        if force:
+            U.force_next_fetch()
+            if self._busy:
+                self._soon.start(800)  # a read is under way with the old cache: read again right after
+                return
         if self._busy:
             return
         try:
@@ -271,7 +280,7 @@ class WindowRow(QWidget):
         col = LEVEL_COLORS["green"] if w.exact else LEVEL_COLORS["amber"]
         badge.setObjectName("exactBadge")
         badge.setStyleSheet(f"QLabel {{ color:{col}; border:1px solid {col}; border-radius:8px; padding:0 7px;"
-                            " font-size:8pt; background:transparent; }}")
+                            f" font-size:{ui_pt(8)}; background:transparent; }}")
         top.addWidget(badge)
         top.addStretch(1)
         pct = BodyLabel("—" if w.remaining_pct is None else f"{w.remaining_pct:.0f}% left", self)
@@ -339,26 +348,106 @@ class UsagePage(SmoothScrollArea):
         sub.setStyleSheet(f"color:{palette()['muted']};")
         tcol.addWidget(sub)
         head.addLayout(tcol, 1)
-        self.refreshBtn = PushButton(FIF.SYNC, "Refresh", body)
+        rcol = QVBoxLayout()
+        rcol.setSpacing(4)
+        self.refreshBtn = PushButton(FIF.SYNC, "Refreshing…", body)
         self.refreshBtn.setMinimumWidth(self.refreshBtn.sizeHint().width())
-        self.refreshBtn.clicked.connect(bar.refresh)
-        head.addWidget(self.refreshBtn, 0, Qt.AlignTop)
+        self.refreshBtn.setText("Refresh now")
+        self.refreshBtn.setToolTip("Ask Claude and Codex for fresh numbers now")
+        self.refreshBtn.clicked.connect(self.refresh_now)
+        rcol.addWidget(self.refreshBtn, 0, Qt.AlignRight)
+        self.updated = CaptionLabel("", body)
+        self.updated.setStyleSheet(f"color:{palette()['faint']};")
+        rcol.addWidget(self.updated, 0, Qt.AlignRight)
+        head.addLayout(rcol)
+        self.login_state = ""  # "" | "waiting" | an error to show
+        self._login_ticks = 0
+        self._login_timer = QTimer(self)
+        self._login_timer.setInterval(LOGIN_POLL_MS)
+        self._login_timer.timeout.connect(self._check_login)
         self.lay.addLayout(head)
         self.cards = QVBoxLayout()
         self.cards.setSpacing(12)
         self.lay.addLayout(self.cards)
         how = CaptionLabel(
             "How it is measured — Codex: exact, read from the rate limits Codex records in its session logs after "
-            "every turn. Claude: exact when the Claude Code CLI reports its rate-limit status during a turn in this "
-            "app; otherwise an estimate (tokens used in the window, from local Claude Code logs; no percentage, "
-            "because the logs do not include the plan size).", body)
+            "every turn. Claude: exact from your Claude account while you're signed in to Claude Code (asked every "
+            "5 minutes, or now with Refresh now), or when Claude reports its limits during a turn in this app; "
+            "otherwise an estimate (tokens used in the window, from local Claude Code logs).", body)
         how.setWordWrap(True)
         how.setStyleSheet(f"color:{palette()['faint']};")
         self.lay.addWidget(how)
         self.lay.addStretch(1)
         self.setWidget(body)
-        bar.refreshed.connect(self.render)
+        bar.refreshed.connect(self._refreshed)
         self.render()
+
+    def refresh_now(self) -> None:
+        self.refreshBtn.setEnabled(False)
+        self.refreshBtn.setText("Refreshing…")
+        self.bar.refresh(force=True)
+
+    def _refreshed(self) -> None:
+        self.refreshBtn.setEnabled(True)
+        self.refreshBtn.setText("Refresh now")
+        self.updated.setText(f"Updated {datetime.now():%H:%M}")
+        self.render()
+
+    def sign_in(self) -> None:
+        """Open a terminal with `claude /login` and watch for the sign-in to land."""
+        from orchestrator.core.claude_login import launch_login
+
+        err = launch_login()
+        self.login_state = err or "waiting"
+        self._login_ticks = 0
+        if not err:
+            self._login_timer.start()
+        self.render()
+
+    def _check_login(self) -> None:
+        from orchestrator.core.claude_login import has_cli_login
+
+        self._login_ticks += 1
+        if has_cli_login():
+            self._login_timer.stop()
+            self.login_state = ""
+            self.refresh_now()
+        elif self._login_ticks * LOGIN_POLL_MS > LOGIN_WAIT_MS:
+            self._login_timer.stop()
+            self.login_state = "The sign-in didn't finish. Try again, or run `claude` then /login yourself."
+            self.render()
+
+    def _login_box(self, parent: QWidget) -> QFrame:
+        pal = palette()
+        box = QFrame(parent)
+        box.setObjectName("loginBox")
+        box.setStyleSheet(f"#loginBox {{ background:{pal['warn_bg']}; border:1px solid {pal['border']};"
+                          " border-radius:10px; }")
+        bl = QHBoxLayout(box)
+        bl.setContentsMargins(14, 10, 10, 10)
+        bl.setSpacing(12)
+        waiting = self.login_state == "waiting"
+        text = ("A terminal is open with Claude Code. Pick your sign-in method there and finish in your browser. "
+                "This updates by itself when you're done." if waiting else
+                "Sign in to Claude Code to see your exact Claude plan usage. A terminal opens and you finish the "
+                "sign-in in your browser. Chats keep using your current token.")
+        msg = CaptionLabel(text, box)
+        msg.setWordWrap(True)
+        msg.setStyleSheet(f"color:{pal['text']};")
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        col.addWidget(msg)
+        if self.login_state and not waiting:
+            err = CaptionLabel(self.login_state, box)
+            err.setWordWrap(True)
+            err.setStyleSheet(f"color:{LEVEL_COLORS['red']};")
+            col.addWidget(err)
+        bl.addLayout(col, 1)
+        self.loginBtn = (PushButton if waiting else PrimaryPushButton)(
+            FIF.SYNC if waiting else FIF.PEOPLE, "Check again" if waiting else "Sign in to Claude", box)
+        self.loginBtn.clicked.connect(self._check_login if waiting else self.sign_in)
+        bl.addWidget(self.loginBtn, 0, Qt.AlignVCenter)
+        return box
 
     def render(self) -> None:
         while self.cards.count():
@@ -389,6 +478,8 @@ class UsagePage(SmoothScrollArea):
                 n.setWordWrap(True)
                 n.setStyleSheet(f"color:{pal['muted']};")
                 cl.addWidget(n)
+            if u.needs_login:
+                cl.addWidget(self._login_box(card))
             card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
             self.cards.addWidget(card)
 

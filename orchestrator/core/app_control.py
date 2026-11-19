@@ -407,9 +407,10 @@ class AppControl(QObject):
             look.code_font = code_font
             parts.append(f"Code font → {code_font}")
         if theme:
-            t = {"dark": "Dark", "light": "Light", "system": "Auto", "auto": "Auto"}.get(theme.strip().lower())
+            t = {"dark": "Dark", "light": "Light", "system": "Auto", "auto": "Auto", "black": "Black",
+                 "oled": "Black", "darker": "Black", "amoled": "Black"}.get(theme.strip().lower())
             if not t:
-                raise AppCommandError("theme must be dark, light or system.")
+                raise AppCommandError("theme must be dark, black (darker, for OLED screens), light or system.")
             look.theme = t
             parts.append(f"Theme → {A.THEMES[t]}")
         if density:

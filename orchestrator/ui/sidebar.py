@@ -28,7 +28,7 @@ from orchestrator.core import model_registry
 from orchestrator.core.catalog import ENGINES
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database
-from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, palette
+from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, palette, ui_ptf
 from orchestrator.ui_text import age, short_title
 
 # Sections inside a project, in order. "app": sessions started from the Claude app or Remote Control.
@@ -76,7 +76,7 @@ class ChatRowDelegate(TreeItemDelegate):
             painter.save()
             painter.setPen(QColor(palette()["muted"]))
             f = QFont(option.font)
-            f.setPointSizeF(7.5)
+            f.setPointSizeF(ui_ptf(7.5))
             f.setBold(True)
             f.setLetterSpacing(QFont.AbsoluteSpacing, 1)
             painter.setFont(f)
@@ -87,7 +87,7 @@ class ChatRowDelegate(TreeItemDelegate):
             painter.save()
             r = option.rect
             f = QFont(option.font)
-            f.setPointSizeF(7.5)
+            f.setPointSizeF(ui_ptf(7.5))
             f.setBold(True)
             f.setLetterSpacing(QFont.AbsoluteSpacing, 0.6)
             painter.setFont(f)
@@ -139,7 +139,7 @@ class ChatRowDelegate(TreeItemDelegate):
         x += 22
         age_txt = index.data(ROLE_AGE) or ""
         af = QFont(option.font)
-        af.setPointSizeF(8)
+        af.setPointSizeF(ui_ptf(8))
         painter.setFont(af)
         aw = painter.fontMetrics().horizontalAdvance(age_txt)
         painter.setPen(QColor(palette()["faint"]))

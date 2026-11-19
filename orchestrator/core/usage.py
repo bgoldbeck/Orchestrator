@@ -66,6 +66,7 @@ class ProviderUsage:
     source: str = ""
     note: str = ""
     updated_at: float | None = None
+    needs_login: bool = False  # Claude: exact plan usage needs the Claude Code CLI sign-in
 
     def window(self, key: str) -> Window | None:
         return next((w for w in self.windows if w.key == key), None)
@@ -329,6 +330,14 @@ def fetch_claude_oauth_usage(tokens: list[tuple[str, str]] | None = None, opener
 _oauth_cache: dict[str, Any] = {}
 
 
+_force = {"next": False}
+
+
+def force_next_fetch() -> None:
+    """The next read asks the account endpoint again instead of using the cached answer."""
+    _force["next"] = True
+
+
 def claude_oauth_usage(db, force: bool = False) -> dict[str, Any]:
     """Cached endpoint answer: memory, else the last one saved in settings; refetched every OAUTH_EVERY s."""
     global _oauth_cache
@@ -336,7 +345,8 @@ def claude_oauth_usage(db, force: bool = False) -> dict[str, Any]:
         _oauth_cache = dict(db.get_setting(CLAUDE_OAUTH_KEY) or {})
     if os.environ.get("ORCHESTRATOR_NO_USAGE_FETCH"):
         return _oauth_cache
-    if force or time.time() - float(_oauth_cache.get("at") or 0) > OAUTH_EVERY:
+    if force or _force["next"] or time.time() - float(_oauth_cache.get("at") or 0) > OAUTH_EVERY:
+        _force["next"] = False
         got = fetch_claude_oauth_usage()
         if "error" in got and any(k in _oauth_cache for k in OAUTH_WINDOWS.values()):
             keep = {k: v for k, v in _oauth_cache.items() if k in OAUTH_WINDOWS.values() or k == "source"}
@@ -456,14 +466,16 @@ class ClaudeUsage(UsageProvider):
             err = acct.get("error") or ""
             note = ("Couldn't read your Claude plan usage" + (f" ({err})" if err else "") + ". Showing token "
                     "estimates from local logs, and exact numbers whenever Claude reports them during a turn. "
-                    "For exact numbers all the time, sign in to Claude Code once: run `claude` in a terminal and "
-                    "type /login. Chats keep using your current token.")
+                    "For exact numbers all the time, sign in to Claude Code once: Usage › Sign in to Claude, or run "
+                    "`claude` in a terminal and type /login. "
+                    "Chats keep using your current token.")
         return ProviderUsage(
             self.id, self.name, windows,
             source=("Claude account usage (exact, every 5 min)" if from_acct else "Claude Code rate-limit reports")
             + " + local logs (estimate)",
             note=note,
-            updated_at=max((w.updated_at or 0) for w in windows) or None)
+            updated_at=max((w.updated_at or 0) for w in windows) or None,
+            needs_login=not from_acct)
 
 
 register(CodexUsage())

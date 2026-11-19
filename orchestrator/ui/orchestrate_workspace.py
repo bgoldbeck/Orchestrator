@@ -12,6 +12,7 @@ import asyncio
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSplitter, QStackedWidget, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
@@ -28,7 +29,7 @@ from qfluentwidgets import (
 from orchestrator.core import inbox as I
 from orchestrator.core.session_manager import SessionManager
 from orchestrator.storage.db import Database, Task
-from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, palette
+from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, palette, ui_pt
 from orchestrator.ui_text import relative
 
 GROUPS = [("waiting", "Needs you"), ("working", "Working"), ("queued", "Queued"), ("done", "Done")]
@@ -330,11 +331,19 @@ class OrchestrateWorkspace(QWidget):
         hl = QHBoxLayout(self.header)
         hl.setContentsMargins(20, 10, 16, 10)
         hl.setSpacing(8)
+        self.backBtn = PushButton(FIF.LEFT_ARROW, "All runs", self.header)
+        self.backBtn.setObjectName("runsBack")
+        self.backBtn.setToolTip("Back to this project's home: all runs and a new goal (Alt+Left). The run keeps going.")
+        self.backBtn.clicked.connect(self.new_goal)
+        hl.addWidget(self.backBtn)
+        back = QShortcut(QKeySequence("Alt+Left"), self)
+        back.setContext(Qt.WidgetWithChildrenShortcut)
+        back.activated.connect(lambda: self.in_run() and self.new_goal())
         self.projectBtn = ProjectButton(self.header)
         self.projectBtn.clicked.connect(self._project_menu)
         hl.addWidget(self.projectBtn)
         self.crumb = QLabel("›", self.header)
-        self.crumb.setStyleSheet(f"color:{p['faint']}; font-size:16pt; background:transparent;")
+        self.crumb.setStyleSheet(f"color:{p['faint']}; font-size:{ui_pt(16)}; background:transparent;")
         hl.addWidget(self.crumb)
         self.runBtn = TransparentPushButton("", self.header)
         self.runBtn.setToolTip("Switch to another run in this project")
@@ -433,7 +442,7 @@ class OrchestrateWorkspace(QWidget):
             self.projectBtn.set_project("Add a project", "")
         o = self.db.orchestration(self.page.current) if self.page.current else None
         in_run = bool(o)
-        for w in (self.crumb, self.runBtn, self.runState, self.stopBtn, self.newGoal):
+        for w in (self.backBtn, self.crumb, self.runBtn, self.runState, self.stopBtn, self.newGoal):
             w.setVisible(in_run)
         self.settingsBtn.setVisible(not in_run and pid is not None)
         lay = self.runState.layout()

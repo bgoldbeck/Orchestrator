@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 def main() -> int:
     which = sys.argv[1] if len(sys.argv) > 1 else "board"
-    out = ROOT / "docs" / "screenshots" / {"board": "orch-workspace.png", "agent": "orch-workspace-agent.png",
+    out = Path(os.environ["SHOT_OUT"]) if os.environ.get("SHOT_OUT") else ROOT / "docs" / "screenshots" / {"board": "orch-workspace.png", "agent": "orch-workspace-agent.png",
                                            "home": "orch-home.png"}[which]
     home = Path(tempfile.mkdtemp(prefix="orch-shot-"))
     os.environ["ORCHESTRATOR_HOME"] = str(home)
@@ -82,6 +82,10 @@ def main() -> int:
     db.set_setting("orchestrate.project", proj.id)
     win = MainWindow(db, SessionManager(db), _app_icon())
     win.setMicaEffectEnabled(False)
+    if os.environ.get("SHOT_THEME"):  # e.g. SHOT_THEME=Black
+        from orchestrator.ui import appearance as A
+
+        A.apply(A.Look(theme=os.environ["SHOT_THEME"]))
     win.resize(1500, 880)
     win.show()
 

@@ -36,7 +36,7 @@ from qfluentwidgets import (
 )
 
 from orchestrator.ui.markdown_render import code_html, split_segments, text_html
-from orchestrator.ui.theme import chat_font, code_pt, engine_badge, mono_css, palette, space
+from orchestrator.ui.theme import chat_font, code_pt, engine_badge, mono_css, palette, space, ui_pt
 
 
 def fade_in(w: QWidget, ms: int = 220) -> None:
@@ -437,7 +437,7 @@ class WarningLine(QWidget):
         ic.setFixedSize(12, 12)
         first = " ".join(text.replace(str(Path.home()), "~").split())
         lbl = QLabel(first, self)
-        lbl.setStyleSheet(f"color:{palette()['faint']}; font-size:8.5pt; background:transparent;")
+        lbl.setStyleSheet(f"color:{palette()['faint']}; font-size:{ui_pt(8.5)}; background:transparent;")
         lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.setToolTip(text)
         self.installEventFilter(ToolTipFilter(self))
@@ -457,7 +457,7 @@ class ContextChip(QWidget):
         chip.setObjectName("contextChip")
         p = palette()
         chip.setStyleSheet(f"#contextChip {{ color:{p['faint']}; border:1px solid {p['border']}; border-radius:8px;"
-                           " padding:1px 8px; font-size:8pt; background:transparent; }}")
+                           f" padding:1px 8px; font-size:{ui_pt(8)}; background:transparent; }}")
         names = ", ".join(t for t in tags if t != "tag") or "system"
         chip.setToolTip(f"Hidden harness text: {names}")
         chip.installEventFilter(ToolTipFilter(chip))
@@ -514,7 +514,7 @@ class UsageLine(QLabel):
         super().__init__("  ·  ".join(parts), parent)
         self.setAlignment(Qt.AlignLeft)
         self.setContentsMargins(22, 0, 0, 0)
-        self.setStyleSheet(f"color:{palette()['faint']}; font-size:8.5pt; background:transparent;")
+        self.setStyleSheet(f"color:{palette()['faint']}; font-size:{ui_pt(8.5)}; background:transparent;")
 
 
 class AppliedCard(QFrame):

@@ -41,7 +41,7 @@ from qfluentwidgets import (
 from orchestrator.core import auth
 from orchestrator.core.catalog import ENGINES
 from orchestrator.storage.db import Database, Model, app_dir
-from orchestrator.ui.theme import ACCENTS, STATUS_COLORS, engine_badge, palette
+from orchestrator.ui.theme import ACCENTS, STATUS_COLORS, engine_badge, palette, ui_pt
 
 CREATE_NEW_CONSOLE = 0x00000010
 
@@ -60,7 +60,7 @@ def card(parent: QWidget) -> tuple[QFrame, QVBoxLayout]:
 class StatusChip(QLabel):
     def set_status(self, ok: bool, text: str) -> None:
         col = STATUS_COLORS["done"] if ok else STATUS_COLORS["error"]
-        self.setText(f'<span style="color:{col}; font-size:13pt;">●</span>&nbsp; {text}')
+        self.setText(f'<span style="color:{col}; font-size:{ui_pt(13)};">●</span>&nbsp; {text}')
 
 
 class VersionProbe(QThread):

@@ -30,7 +30,7 @@ from orchestrator.core.scheduler import ScheduleRunner, describe, fmt_when, plai
 from orchestrator.core.session_manager import POLICIES
 from orchestrator.storage.db import Database, Schedule
 from orchestrator.ui.schedule_dialog import ScheduleDialog
-from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, engine_badge, palette
+from orchestrator.ui.theme import ENGINE_COLORS, STATUS_COLORS, engine_badge, palette, ui_pt
 
 RUN_COLORS = {"running": STATUS_COLORS["running"], "done": STATUS_COLORS["done"], "error": STATUS_COLORS["error"],
               "skipped": STATUS_COLORS["waiting"], "stopped": STATUS_COLORS["idle"]}
@@ -41,7 +41,7 @@ def chip(text: str, parent: QWidget, color: str | None = None) -> QLabel:
     lb = QLabel(text, parent)
     fg = color or p["muted"]
     lb.setStyleSheet(f"QLabel {{ color:{fg}; background:{p['card_hover']}; border:1px solid {p['border']};"
-                     f" border-radius:9px; padding:1px 8px; font-size:8.5pt; }}")
+                     f" border-radius:9px; padding:1px 8px; font-size:{ui_pt(8.5)}; }}")
     return lb
 
 
@@ -142,7 +142,7 @@ class ScheduleCard(QFrame):
             last = runs[0]
             dot = f'<span style="color:{RUN_COLORS.get(last.status, "#888")};">●</span>'
             ll = QLabel(f"{dot}&nbsp; Last run {last.status} · {fmt_when(last.started_at)}", self)
-            ll.setStyleSheet(f"color:{p['muted']}; font-size:8.5pt;")
+            ll.setStyleSheet(f"color:{p['muted']}; font-size:{ui_pt(8.5)};")
             foot.addWidget(ll)
             self.histBtn = HyperlinkButton("", "History", self)
             self.histBtn.setIcon(FIF.HISTORY)
@@ -157,7 +157,7 @@ class ScheduleCard(QFrame):
         for r in runs:
             row = QHBoxLayout()
             dot = QLabel("●", self.history)
-            dot.setStyleSheet(f"color:{RUN_COLORS.get(r.status, '#888')}; font-size:9pt;")
+            dot.setStyleSheet(f"color:{RUN_COLORS.get(r.status, '#888')}; font-size:{ui_pt(9)};")
             when = CaptionLabel(datetime.fromtimestamp(r.started_at).strftime("%a %b %d, %H:%M"), self.history)
             when.setFixedWidth(140)
             dur = f"{int((r.finished_at - r.started_at))} s" if r.finished_at else "running…"
@@ -328,7 +328,7 @@ class SchedulesPage(SmoothScrollArea):
             row = QHBoxLayout()
             row.setSpacing(10)
             dot = QLabel("●", box)
-            dot.setStyleSheet(f"color:{RUN_COLORS.get(r.status, '#888')}; font-size:9pt;")
+            dot.setStyleSheet(f"color:{RUN_COLORS.get(r.status, '#888')}; font-size:{ui_pt(9)};")
             badge = QLabel(box)
             badge.setPixmap(engine_badge(s.engine, 18))
             badge.setFixedSize(18, 18)

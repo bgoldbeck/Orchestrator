@@ -28,7 +28,7 @@ from qfluentwidgets import (
 
 from orchestrator.core import mcp_config as M
 from orchestrator.storage.db import Database
-from orchestrator.ui.theme import ENGINE_COLORS, palette
+from orchestrator.ui.theme import ENGINE_COLORS, palette, ui_pt
 
 STATUS_COLORS = {"connected": "#3fb950", "failed": "#f85149", "needs-auth": "#f5b544", "pending": "#7d8590"}
 SCOPE_TEXT = {"user": "your config", "local": "one project", "project": "project .mcp.json", "plugin": "plugin"}
@@ -38,7 +38,7 @@ def _chip(text: str, color: str, parent: QWidget) -> QLabel:
     lb = QLabel(text, parent)
     lb.setObjectName("chip")
     lb.setStyleSheet(f"QLabel#chip {{ color:{color}; border:1px solid {color}; border-radius:9px; padding:0 8px;"
-                     f" font-size:8.5pt; background:transparent; }}")
+                     f" font-size:{ui_pt(8.5)}; background:transparent; }}")
     return lb
 
 

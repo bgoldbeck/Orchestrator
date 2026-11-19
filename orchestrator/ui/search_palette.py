@@ -8,6 +8,7 @@ from qfluentwidgets import CaptionLabel, ListWidget, SearchLineEdit, isDarkTheme
 
 from orchestrator.core.catalog import ENGINES
 from orchestrator.storage.db import Database
+from orchestrator.ui import theme as T
 from orchestrator.ui.theme import palette
 from orchestrator.ui_text import age
 
@@ -33,7 +34,7 @@ class SearchPalette(QFrame):
         super().__init__(parent)
         self.db = db
         p = palette()
-        bg = "#202020" if isDarkTheme() else "#fbfbfb"
+        bg = ("#0b0b0b" if T.black() else "#202020") if isDarkTheme() else "#fbfbfb"
         self.setObjectName("searchPalette")
         self.setStyleSheet(f"#searchPalette {{ background:{bg}; border:1px solid {p['border']}; border-radius:12px; }}")
         shadow = QGraphicsDropShadowEffect(self)

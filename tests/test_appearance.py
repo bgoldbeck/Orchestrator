@@ -111,3 +111,80 @@ def test_main_font_size_moves_chat_text():
     look2.ui_size = 14.0
     A.follow_ui_size(look2, 10.0)
     assert look2.chat_size == 16.0  # clamps to the nearest offered size
+
+
+def test_fixed_point_labels_follow_font_size(db, qapp):
+    """Labels with fixed point sizes (pills, captions) grow with Font size right away, no reload."""
+    from PySide6.QtWidgets import QLabel
+
+    from orchestrator.ui import appearance as A
+    from orchestrator.ui import theme as T
+
+    lbl = QLabel("pill")
+    lbl.setStyleSheet(f"color:red; font-size:{T.ui_pt(8.5)};")
+    cap = QLabel("caption")
+    f = cap.font()
+    f.setPointSizeF(T.ui_ptf(8))
+    cap.setFont(f)
+    look = A.Look(ui_size=14.0)
+    A.apply(look)
+    assert "font-size:11.9pt" in lbl.styleSheet() and abs(cap.font().pointSizeF() - 11.2) < 0.05
+    assert T.ui_pt(8.5) == "11.9pt"  # new widgets are built at the new size too
+    A.apply(A.Look())
+    assert "font-size:8.5pt" in lbl.styleSheet()
+
+
+def test_running_chat_resizes_in_place(tmp_path, monkeypatch, qapp):
+    """A chat that is still working can't be rebuilt; its text is resized where it is."""
+    import asyncio
+
+    from PySide6.QtWidgets import QLabel
+
+    monkeypatch.setenv("ORCHESTRATOR_HOME", str(tmp_path))
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    from orchestrator.core.session_manager import SessionManager
+    from orchestrator.storage.db import Database
+    from orchestrator.ui import appearance as A
+    from orchestrator.ui.chat_view import ChatView
+
+    db = Database(tmp_path / "t.db")
+    mgr = SessionManager(db)
+    p = db.add_project(str(tmp_path), "p")
+    s = db.create_session(p.id, "claude", "claude-opus-5-5", "medium", title="T")
+    db.add_message(s.id, "user", "text", {"text": "hello"})
+    db.add_message(s.id, "assistant", "text", {"text": "Hi **there**"})
+    view = ChatView(db, mgr)
+    view.show_session(s.id)
+    monkeypatch.setattr(mgr, "is_running", lambda _sid: True)
+    try:
+        look = A.Look(ui_size=14.0)
+        A.follow_ui_size(look, 10.0)
+        A.apply(look)
+        sizes = {round(lbl.font().pointSizeF(), 1) for lbl in view.column.findChildren(QLabel)
+                 if lbl.font().pointSizeF() > 0 and lbl.text()}
+        assert sizes == {look.chat_size} and view._restyle_pending
+        assert view.prompt.edit.font().pointSizeF() == look.chat_size
+    finally:
+        A.apply(A.Look(), emit=False)
+        view.deleteLater()
+
+
+def test_black_theme(db, qapp):
+    from PySide6.QtGui import QColor
+    from qfluentwidgets import FluentWindow
+
+    from orchestrator.ui import appearance as A
+    from orchestrator.ui import theme as T
+
+    assert "Black" in A.THEMES
+    win = FluentWindow()
+    A.save(db, A.Look(theme="Black"))
+    look = A.load(db)
+    assert look.theme == "Black"
+    A.apply(look)
+    assert T.black() and T.palette()["code_bg"] == T.BLACK["code_bg"]
+    A.style_window(win)
+    assert win._darkBackgroundColor == QColor(A.BLACK_BG)
+    A.apply(A.Look(theme="Dark"))
+    assert not T.black() and win._darkBackgroundColor == QColor(A.DARK_BG)
+    win.deleteLater()

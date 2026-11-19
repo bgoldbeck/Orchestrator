@@ -99,6 +99,12 @@ def test_header_project_and_run(win):
     cards[0].clicked.emit(o.id)
     assert ws.page.current == o.id and ws.body.currentWidget() is ws.split
     assert not ws.runBtn.isHidden() and ws.runBtn.text().startswith("goal")
+    assert not ws.backBtn.isHidden() and ws.backBtn.text() == "All runs"
+    ws.backBtn.click()
+    assert ws.page.current is None and ws.body.currentWidget() is ws.page and ws.backBtn.isHidden()
+    cards = ws.page.findChildren(RunCard)
+    cards[0].clicked.emit(o.id)
+    assert ws.page.current == o.id
     assert "Tasks · 4" == ws.sideTitle.text()
     menu = ws.tasks.task_menu(tids["done"][0])
     assert "Retry" in [a.text() for a in menu.actions()]
