@@ -218,3 +218,40 @@ def test_read_all_from_snapshot_on_worker_thread(db):
     t.join()
     claude = next(u for u in out if u.provider == "claude")
     assert claude.window("weekly").remaining_pct == 50.0 and not claude.note.startswith("Could not")
+
+
+def test_claude_account_usage_fetch_and_fallback(db, monkeypatch):
+    import io
+    import urllib.error
+
+    from orchestrator.core import usage as U
+
+    body = {"five_hour": {"utilization": 37.0, "resets_at": "2099-01-01T05:00:00+00:00"},
+            "seven_day": {"utilization": 61.5, "resets_at": "2099-01-05T00:00:00Z"}}
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    got = U.fetch_claude_oauth_usage([("tok", "app")], opener=lambda req, timeout: Resp(json.dumps(body).encode()))
+    assert got["five_hour"]["used_percent"] == 37.0 and got["weekly"]["used_percent"] == 61.5
+    assert got["weekly"]["resets_at"] > time.time()
+
+    def forbidden(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, io.BytesIO(b"{}"))
+
+    bad = U.fetch_claude_oauth_usage([("tok", "app")], opener=forbidden)
+    assert "setup-token" in bad["error"]
+    # the provider shows exact numbers from the saved answer, and the fallback note otherwise
+    db.set_setting(U.CLAUDE_OAUTH_KEY, got)
+    monkeypatch.setattr(U, "_oauth_cache", {})
+    u = U.ClaudeUsage().read(db)
+    five, week = u.window("five_hour"), u.window("weekly")
+    assert five.exact and five.remaining_pct == 63.0 and week.remaining_pct == 38.5 and "account" in u.source
+    db.set_setting(U.CLAUDE_OAUTH_KEY, bad)
+    monkeypatch.setattr(U, "_oauth_cache", {})
+    u = U.ClaudeUsage().read(db)
+    assert not u.window("five_hour").exact and "/login" in u.note

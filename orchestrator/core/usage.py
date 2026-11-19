@@ -230,6 +230,10 @@ class CodexUsage(UsageProvider):
 # ------------------------------------------------------------------ Claude (exact when reported, else estimate)
 
 CLAUDE_KEY = "usage.claude.rate_limits"  # {window type: {status, utilization, resets_at, at}}
+CLAUDE_OAUTH_KEY = "usage.claude.oauth"  # last answer of the account usage endpoint: {at, five_hour, seven_day, error}
+OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+OAUTH_EVERY = 300  # seconds between fetches
+OAUTH_WINDOWS = {"five_hour": "five_hour", "seven_day": "weekly"}
 CLAUDE_WINDOWS = {"five_hour": ("five_hour", "5-hour"), "seven_day": ("weekly", "Weekly")}
 
 
@@ -241,6 +245,110 @@ def record_claude_rate_limit(db: Database, info: dict[str, Any]) -> None:
     data[kind] = {"status": info.get("status") or "", "utilization": util,
                   "resets_at": info.get("resets_at") or info.get("resetsAt"), "at": time.time()}
     db.set_setting(CLAUDE_KEY, data)
+
+
+def claude_oauth_tokens() -> list[tuple[str, str]]:
+    """(token, where) pairs to try: the token the app runs Claude with, then the Claude Code CLI login."""
+    out: list[tuple[str, str]] = []
+    try:
+        from orchestrator.core import auth
+
+        tok, src = auth.resolve(auth.CLAUDE_TOKEN)
+        if tok:
+            out.append((tok, src or "app"))
+    except Exception:  # noqa: BLE001 - no keyring etc.
+        pass
+    try:
+        data = json.loads((Path.home() / ".claude" / ".credentials.json").read_text(encoding="utf-8"))
+        tok = (data.get("claudeAiOauth") or {}).get("accessToken")
+        if tok and all(tok != t for t, _ in out):
+            out.append((tok, "Claude Code login"))
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def _iso_ts(v: Any) -> float | None:
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str) and v:
+        from datetime import datetime
+
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def parse_oauth_usage(body: dict[str, Any], at: float) -> dict[str, Any]:
+    """{window key: {used_percent, resets_at}} from the usage endpoint (utilization is 0-100)."""
+    out: dict[str, Any] = {"at": at}
+    for src, key in OAUTH_WINDOWS.items():
+        w = body.get(src)
+        if isinstance(w, dict) and w.get("utilization") is not None:
+            out[key] = {"used_percent": float(w["utilization"]), "resets_at": _iso_ts(w.get("resets_at"))}
+    return out
+
+
+def fetch_claude_oauth_usage(tokens: list[tuple[str, str]] | None = None, opener=None) -> dict[str, Any]:
+    """Ask the account usage endpoint (what Claude Code's /usage shows). Never raises; errors land in "error"."""
+    import urllib.error
+    import urllib.request
+
+    now = time.time()
+    toks = claude_oauth_tokens() if tokens is None else tokens
+    if not toks:
+        return {"at": now, "error": "No Claude sign-in found (Settings › Accounts)."}
+    errors = []
+    for tok, where in toks:
+        req = urllib.request.Request(OAUTH_USAGE_URL, headers={
+            "Authorization": f"Bearer {tok}", "anthropic-beta": "oauth-2025-04-20",
+            "Content-Type": "application/json", "User-Agent": "Orchestrator"})
+        try:
+            with (opener or urllib.request.urlopen)(req, timeout=10) as r:
+                body = json.loads(r.read().decode("utf-8") or "{}")
+            got = parse_oauth_usage(body, now)
+            if len(got) > 1:
+                got["source"] = where
+                return got
+            errors.append(f"{where}: no usage in the answer")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 403:
+                errors.append(f"{where}: this token can't read plan usage (a `claude setup-token` token only runs "
+                              "chats)")
+            elif exc.code == 401:
+                errors.append(f"{where}: sign-in expired (open Claude Code once to refresh it)")
+            else:
+                errors.append(f"{where}: HTTP {exc.code}")
+        except (OSError, ValueError) as exc:
+            errors.append(f"{where}: {exc}")
+    return {"at": now, "error": "; ".join(errors)}
+
+
+_oauth_cache: dict[str, Any] = {}
+
+
+def claude_oauth_usage(db, force: bool = False) -> dict[str, Any]:
+    """Cached endpoint answer: memory, else the last one saved in settings; refetched every OAUTH_EVERY s."""
+    global _oauth_cache
+    if not _oauth_cache:
+        _oauth_cache = dict(db.get_setting(CLAUDE_OAUTH_KEY) or {})
+    if os.environ.get("ORCHESTRATOR_NO_USAGE_FETCH"):
+        return _oauth_cache
+    if force or time.time() - float(_oauth_cache.get("at") or 0) > OAUTH_EVERY:
+        got = fetch_claude_oauth_usage()
+        if "error" in got and any(k in _oauth_cache for k in OAUTH_WINDOWS.values()):
+            keep = {k: v for k, v in _oauth_cache.items() if k in OAUTH_WINDOWS.values() or k == "source"}
+            got = {**keep, **got}  # keep the last good numbers, try again later
+        _oauth_cache = got
+    return _oauth_cache
+
+
+def persist(db: Database) -> None:
+    """Save what workers fetched (call on the GUI thread)."""
+    if _oauth_cache and db.get_setting(CLAUDE_OAUTH_KEY) != _oauth_cache:
+        db.set_setting(CLAUDE_OAUTH_KEY, _oauth_cache)
 
 
 def claude_root() -> Path:
@@ -303,19 +411,29 @@ def fmt_tokens(n: int) -> str:
 class ClaudeUsage(UsageProvider):
     id = "claude"
     name = "Claude"
-    settings_keys = (CLAUDE_KEY,)
+    settings_keys = (CLAUDE_KEY, CLAUDE_OAUTH_KEY)
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, fetch: bool = True) -> None:
         self.root = root
+        self.fetch = fetch
 
     def read(self, db: Database) -> ProviderUsage:
         data = db.get_setting(CLAUDE_KEY) or {}
+        acct = claude_oauth_usage(db) if self.fetch else (db.get_setting(CLAUDE_OAUTH_KEY) or {})
         now = time.time()
         windows = []
         for kind, (key, label) in CLAUDE_WINDOWS.items():
             w = Window(key, label)
             rep = data.get(kind)
-            if rep:
+            got = acct.get(key)
+            if got and not (got.get("resets_at") and got["resets_at"] < now):
+                w.used_percent = round(float(got["used_percent"]), 1)
+                w.resets_at = got.get("resets_at")
+                w.exact = True
+                w.updated_at = acct.get("at")
+                if rep:
+                    w.status = rep.get("status") or ""
+            elif rep:
                 resets = rep.get("resets_at")
                 w.resets_at = float(resets) if resets else None
                 w.status = rep.get("status") or ""
@@ -332,11 +450,19 @@ class ClaudeUsage(UsageProvider):
             w.estimate = f"≈ {fmt_tokens(tokens)} tokens in this window (from local Claude Code logs)"
             windows.append(w)
         exact = any(w.exact for w in windows)
+        from_acct = any(k in acct for k in OAUTH_WINDOWS.values())
+        note = ""
+        if not exact:
+            err = acct.get("error") or ""
+            note = ("Couldn't read your Claude plan usage" + (f" ({err})" if err else "") + ". Showing token "
+                    "estimates from local logs, and exact numbers whenever Claude reports them during a turn. "
+                    "For exact numbers all the time, sign in to Claude Code once: run `claude` in a terminal and "
+                    "type /login. Chats keep using your current token.")
         return ProviderUsage(
             self.id, self.name, windows,
-            source="Claude Code rate-limit reports" + (" (exact)" if exact else "") + " + local logs (estimate)",
-            note=("" if exact else "Exact percentages appear after a Claude turn in this app when the Claude Code "
-                  "CLI reports them; until then the token counts are estimates from local logs."),
+            source=("Claude account usage (exact, every 5 min)" if from_acct else "Claude Code rate-limit reports")
+            + " + local logs (estimate)",
+            note=note,
             updated_at=max((w.updated_at or 0) for w in windows) or None)
 
 

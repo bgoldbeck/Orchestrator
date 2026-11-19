@@ -156,6 +156,7 @@ class UsagePill(QWidget):
 
 def read_usage(db: Database) -> list[U.ProviderUsage]:
     items = U.read_all(db)
+    U.persist(db)
     U.record_history(db, items)
     return items
 
@@ -209,6 +210,7 @@ class UsageBar(QWidget):
             try:
                 snap = U.snapshot(self.db)
                 items = await asyncio.to_thread(U.read_all, snap)  # log reading stays off the GUI thread
+                U.persist(self.db)
                 U.record_history(self.db, items)
                 self.apply(items)
             finally:
