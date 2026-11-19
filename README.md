@@ -197,6 +197,15 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
   (models, queue order, questions, Stop all, history); **+** starts a new goal.
 - Clicking an orchestration task on the Board opens it here too, next to its planner.
 
+## Attach files and images
+
+![Attachments](docs/screenshots/attachments.png)
+
+- In any chat (the planner too): the **+** button, **Ctrl+V** with an image or copied files, or drag files onto the
+  message box. Chips show what will be sent; × removes one. A message can be only attachments.
+- Files are copied to `<data>/attachments/<chat>/`. Claude gets images inline and every file listed by path;
+  Codex gets `--image` for images on a new turn, and every file listed by path.
+
 ## Schedules: readable buttons, easy times
 
 ![Run once](docs/screenshots/schedules-custom.png)

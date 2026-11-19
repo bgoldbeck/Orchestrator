@@ -264,7 +264,18 @@ class ClaudeAdapter(AgentAdapter):
                 st = ClaudeMapState()
                 async with sdk.ClaudeSDKClient(options=options) as client:
                     self._client = client
-                    await client.query(req.prompt)
+                    if req.attachments:
+                        from orchestrator.core.attachments import claude_content
+
+                        content = claude_content(req.prompt, req.attachments)
+
+                        async def one_message():
+                            yield {"type": "user", "message": {"role": "user", "content": content},
+                                   "parent_tool_use_id": None}
+
+                        await client.query(one_message())
+                    else:
+                        await client.query(req.prompt)
                     async for m in client.receive_response():
                         for ev in map_claude_message(m, st):
                             b.put(ev)

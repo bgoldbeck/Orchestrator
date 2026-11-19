@@ -28,6 +28,8 @@ class TurnRequest:
     lean: bool = False
     # MCP servers from the user's own config to hide this turn (switched off in Orchestrator).
     mcp_off: list[str] = field(default_factory=list)
+    # Files attached to this message (already copied into the app's data folder).
+    attachments: list[str] = field(default_factory=list)
 
 
 class AgentAdapter(abc.ABC):
