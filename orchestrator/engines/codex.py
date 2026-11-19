@@ -161,6 +161,14 @@ def codex_mcp_overrides(mcp: dict[str, dict] | None) -> list[str]:
     return out
 
 
+def codex_prompt(req: TurnRequest) -> str:
+    if not req.attachments:
+        return req.prompt
+    from orchestrator.core.attachments import prompt_text
+
+    return prompt_text(req.prompt, req.attachments)
+
+
 def build_codex_cmd(exe: str, req: TurnRequest) -> list[str]:
     common = ["--json", "--skip-git-repo-check", *codex_mcp_overrides(req.mcp)]
     for name in req.mcp_off:  # switched off in Orchestrator; config.toml is left as it is
@@ -172,7 +180,10 @@ def build_codex_cmd(exe: str, req: TurnRequest) -> list[str]:
     if req.resume_id:
         # `exec resume` has no -s/-C; sandbox via config, cwd via process cwd.
         return [exe, "exec", "resume", *common, "-c", f'sandbox_mode="{req.sandbox}"', req.resume_id, "-"]
-    return [exe, "exec", *common, "-s", req.sandbox, "-C", str(req.cwd), "-"]
+    from orchestrator.core.attachments import is_image
+
+    images = [f"--image={p}" for p in req.attachments if is_image(p)]  # new turns only; resume lists paths
+    return [exe, "exec", *common, *images, "-s", req.sandbox, "-C", str(req.cwd), "-"]
 
 
 class CodexAdapter(AgentAdapter):
@@ -204,7 +215,7 @@ class CodexAdapter(AgentAdapter):
             )
             self._proc = proc
             assert proc.stdin and proc.stdout and proc.stderr
-            proc.stdin.write(req.prompt)
+            proc.stdin.write(codex_prompt(req))
             proc.stdin.close()
             for line in proc.stdout:
                 b.put(line)

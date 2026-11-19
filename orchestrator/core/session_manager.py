@@ -100,8 +100,9 @@ class SessionManager(QObject):
         self.db.update_session(sid, status=status)
         self.status_changed.emit(sid, status)
 
-    def send(self, sid: int, text: str, policy: str | None = None) -> bool:
-        """Start a turn. `policy` (see POLICIES) marks an unattended run. Returns False if not started."""
+    def send(self, sid: int, text: str, policy: str | None = None, attachments: list[str] | None = None) -> bool:
+        """Start a turn. `policy` (see POLICIES) marks an unattended run. `attachments` are file paths; they are
+        copied into the app's data folder for this chat. Returns False if not started."""
         if self.is_running(sid):
             return False
         s = self.db.session(sid)
@@ -109,11 +110,17 @@ class SessionManager(QObject):
             return False
         if not model_registry.is_allowed(self.db, s.engine, s.model or ""):
             return False  # disabled model: never run it, never swap it silently
+        files: list[str] = []
+        if attachments:
+            from orchestrator.core import attachments as A
+
+            files = [str(A.store(sid, p)) for p in attachments if not A.check(p)]
+            text = text or "See the attached files."
         if s.source == "app" and not self.db.messages(sid):
             self.db.update_session(sid, title=make_title(text))
             self.session_updated.emit(sid)
-        self.db.add_message(sid, "user", "text", {"text": text})
-        self._tasks[sid] = asyncio.ensure_future(self._run(sid, text, policy))
+        self.db.add_message(sid, "user", "text", {"text": text, **({"attachments": files} if files else {})})
+        self._tasks[sid] = asyncio.ensure_future(self._run(sid, text, policy, files))
         return True
 
     async def stop(self, sid: int) -> None:
@@ -143,7 +150,7 @@ class SessionManager(QObject):
                 out.update(got)
         return out or None
 
-    async def _run(self, sid: int, prompt: str, policy: str | None = None) -> None:
+    async def _run(self, sid: int, prompt: str, policy: str | None = None, files: list[str] | None = None) -> None:
         s = self.db.session(sid)
         proj = self.db.project(s.project_id) if s else None
         if not s or not proj:
@@ -158,7 +165,7 @@ class SessionManager(QObject):
                           resume_id=s.engine_session_id,
                           sandbox=self.run_options.get(sid, {}).get("sandbox", sandbox),
                           mcp=self.mcp_for(sid), lean=self.lean_for(sid),
-                          mcp_off=mcp_config.off_for_run(self.db, s.engine, sid))
+                          mcp_off=mcp_config.off_for_run(self.db, s.engine, sid), attachments=list(files or []))
         buf: list[str] = []
         pending_tools: dict[str, ToolCall] = {}
         final_status = "done"

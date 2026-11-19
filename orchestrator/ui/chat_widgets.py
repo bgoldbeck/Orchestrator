@@ -228,7 +228,7 @@ class AssistantMessage(QWidget):
 
 
 class UserMessage(QWidget):
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+    def __init__(self, text: str, parent: QWidget | None = None, attachments: list[str] | None = None) -> None:
         super().__init__(parent)
         p = palette()
         lay = QHBoxLayout(self)
@@ -253,6 +253,14 @@ class UserMessage(QWidget):
                                default=0) + 4, 520)
         lbl.setMinimumWidth(self.natural)
         bl.addWidget(lbl)
+        if attachments:
+            from orchestrator.core.attachments import label
+
+            for path in attachments:
+                a = QLabel(f"📎 {label(path)}", bubble)
+                a.setToolTip(path)
+                a.setStyleSheet(f"color:{p['muted']}; background:transparent;")
+                bl.addWidget(a)
         bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
         lay.addWidget(bubble)
 

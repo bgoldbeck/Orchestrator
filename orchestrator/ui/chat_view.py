@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QActionGroup, QKeyEvent
+from PySide6.QtGui import QAction, QActionGroup, QKeyEvent, QKeySequence
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import (
     Action,
@@ -76,6 +76,15 @@ class PromptBox(QFrame):
         self.edit.installEventFilter(self)
         self.edit.textChanged.connect(self._grow)
         self.edit.document().setDocumentMargin(2)
+        self.edit.setAcceptDrops(False)  # drops land on the box (files become attachments)
+        self.setAcceptDrops(True)
+        self.attachments: list[str] = []
+        self.chips = QWidget(self)
+        self.chipsLay = QHBoxLayout(self.chips)
+        self.chipsLay.setContentsMargins(0, 0, 0, 0)
+        self.chipsLay.setSpacing(6)
+        self.chips.hide()
+        lay.addWidget(self.chips)
         lay.addWidget(self.edit)
         row = QHBoxLayout()
         row.setSpacing(6)
@@ -93,6 +102,12 @@ class PromptBox(QFrame):
         self.later.setToolTip("Run once, later…")
         self.later.installEventFilter(ToolTipFilter(self.later))
         self.later.clicked.connect(self.runLaterRequested.emit)
+        self.attach = TransparentToolButton(FIF.ADD, self)
+        self.attach.setFixedSize(32, 32)
+        self.attach.setToolTip("Attach files or images (or paste an image, or drop files here)")
+        self.attach.installEventFilter(ToolTipFilter(self.attach))
+        self.attach.clicked.connect(self._pick_files)
+        row.addWidget(self.attach)
         row.addWidget(self.hint, 1)
         row.addWidget(self.later)
         row.addWidget(self.send)
@@ -111,6 +126,8 @@ class PromptBox(QFrame):
                 ke: QKeyEvent = e  # type: ignore[assignment]
                 if ke.key() in (Qt.Key_Return, Qt.Key_Enter) and not (ke.modifiers() & Qt.ShiftModifier):
                     self._submit()
+                    return True
+                if ke.matches(QKeySequence.Paste) and self._paste_files():
                     return True
             elif e.type() == QEvent.FocusIn:
                 self._style(True)
@@ -132,9 +149,102 @@ class PromptBox(QFrame):
         if self._running:
             return
         text = self.edit.toPlainText().strip()
-        if text:
+        if text or self.attachments:
             self.edit.clear()
             self.submitted.emit(text)
+
+    # ---- attachments
+    def add_attachments(self, paths: list[str]) -> list[str]:
+        """Add files; returns the problems (missing, too big) for the caller to show."""
+        from orchestrator.core.attachments import check
+
+        problems = []
+        for p in paths:
+            why = check(p)
+            if why:
+                problems.append(why)
+            elif p not in self.attachments:
+                self.attachments.append(p)
+        self._render_chips()
+        return problems
+
+    def take_attachments(self) -> list[str]:
+        out, self.attachments = self.attachments, []
+        self._render_chips()
+        return out
+
+    def _render_chips(self) -> None:
+        from orchestrator.core.attachments import label
+
+        while self.chipsLay.count():
+            w = self.chipsLay.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        p = palette()
+        for path in self.attachments:
+            chip = QFrame(self.chips)
+            chip.setObjectName("attChip")
+            chip.setStyleSheet(f"#attChip {{ background:{p['inline_code']}; border-radius:8px; }}")
+            cl = QHBoxLayout(chip)
+            cl.setContentsMargins(8, 2, 2, 2)
+            cl.setSpacing(2)
+            lb = QLabel(f"📎 {label(path)}", chip)
+            lb.setToolTip(path)
+            lb.setStyleSheet(f"color:{p['text']}; background:transparent;")
+            cl.addWidget(lb)
+            x = TransparentToolButton(FIF.CLOSE, chip)
+            x.setFixedSize(20, 20)
+            x.setToolTip("Remove")
+            x.clicked.connect(lambda _=False, path=path: self._remove(path))
+            cl.addWidget(x)
+            self.chipsLay.addWidget(chip)
+        self.chipsLay.addStretch(1)
+        self.chips.setVisible(bool(self.attachments))
+
+    def _remove(self, path: str) -> None:
+        if path in self.attachments:
+            self.attachments.remove(path)
+        self._render_chips()
+
+    def _pick_files(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        paths, _f = QFileDialog.getOpenFileNames(self, "Attach files")
+        if paths:
+            self.add_attachments(paths)
+
+    def _paste_files(self) -> bool:
+        """Ctrl+V with an image or copied files on the clipboard attaches them. Plain text pastes as usual."""
+        from PySide6.QtWidgets import QApplication
+
+        md = QApplication.clipboard().mimeData()
+        if md is None:
+            return False
+        files = [u.toLocalFile() for u in md.urls() if u.isLocalFile()] if md.hasUrls() else []
+        if files:
+            self.add_attachments(files)
+            return True
+        if md.hasImage():
+            from orchestrator.core.attachments import pasted_image_path
+
+            img = QApplication.clipboard().image()
+            if not img.isNull():
+                path = pasted_image_path()
+                img.save(str(path), "PNG")
+                self.add_attachments([str(path)])
+                return True
+        return False
+
+    def dragEnterEvent(self, e) -> None:  # noqa: N802
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e) -> None:  # noqa: N802
+        files = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+        if files:
+            self.add_attachments(files)
+            e.acceptProposedAction()
 
     def set_running(self, running: bool) -> None:
         self._running = running
@@ -621,7 +731,7 @@ class ChatView(QWidget):
         for m in msgs:
             k = m["kind"]
             if m["role"] == "user":
-                self._add(UserMessage(m["text"]), False)
+                self._add(UserMessage(m["text"], attachments=m.get("attachments")), False)
             elif k == "text":
                 self._add(AssistantMessage(self.session.engine, self._engine_label(), m["text"]), False)
             elif k == "tool":
@@ -704,14 +814,19 @@ class ChatView(QWidget):
             InfoBar.warning("Model disabled", model_registry.disabled_message(self.db, s.engine, s.model or ""),
                             parent=self.window(), position=InfoBarPosition.TOP_RIGHT, duration=4000)
             return
-        if self._try_app_command(text):
+        files = self.prompt.take_attachments()
+        if not files and self._try_app_command(text):
             return
+        text = text or "See the attached files."
         self.empty.hide()
         self.scroll.show()
         self._stick = True
-        self._add(UserMessage(text))
+        self._add(UserMessage(text, attachments=files))
         self._current = None
-        self.mgr.send(self.session.id, text)
+        if files:
+            self.mgr.send(self.session.id, text, attachments=files)
+        else:
+            self.mgr.send(self.session.id, text)
         self._show_dots()
 
     def _run_later(self) -> None:
