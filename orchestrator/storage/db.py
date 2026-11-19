@@ -339,6 +339,11 @@ class Database:
         return [self._sess(r) for r in self.conn.execute(
             "SELECT * FROM sessions WHERE project_id=? AND status!='hidden' ORDER BY last_active DESC", (project_id,))]
 
+    def child_sessions(self, sid: int) -> list[Session]:
+        """Sub-agent chats started by this orchestrator chat, oldest first."""
+        return [self._sess(r) for r in self.conn.execute(
+            "SELECT * FROM sessions WHERE parent_id=? AND status!='hidden' ORDER BY id", (sid,))]
+
     def session(self, sid: int) -> Session | None:
         r = self.conn.execute("SELECT * FROM sessions WHERE id=?", (sid,)).fetchone()
         return self._sess(r) if r else None

@@ -248,11 +248,17 @@ class UserMessage(QWidget):
         lbl.setFont(f)
         lbl.setStyleSheet(f"color:{p['text']}; background:transparent;")
         # short messages stay on one line instead of wrapping into a narrow column
-        longest = max((lbl.fontMetrics().horizontalAdvance(line) for line in text.splitlines() or [""]), default=0)
-        lbl.setMinimumWidth(min(longest + 4, 520))
+        self.label = lbl
+        self.natural = min(max((lbl.fontMetrics().horizontalAdvance(line) for line in text.splitlines() or [""]),
+                               default=0) + 4, 520)
+        lbl.setMinimumWidth(self.natural)
         bl.addWidget(lbl)
         bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Minimum)
         lay.addWidget(bubble)
+
+    def fit(self, width: int) -> None:
+        """Cap the one-line minimum to the space the chat has (narrow panes, side by side)."""
+        self.label.setMinimumWidth(max(60, min(self.natural, int(width * 0.8) - 24)))
 
 
 TOOL_META = {

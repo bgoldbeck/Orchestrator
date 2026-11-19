@@ -153,6 +153,15 @@ See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [M0_NOTES.md](M0_NOTES.md) 
 - Finished tasks wait in **Review** until you press **Looks good** (or the check next to the column title for all
   successful ones). Failed tasks stay there with **Retry**. Filter by project at the top right.
 
+## Side by side
+
+![Side by side](docs/screenshots/split-view.png)
+
+- Opening an agent's chat from the Board or the Orchestrate page shows it **next to its orchestrator's chat**, so you
+  can read the plan and the agent's work at the same time. Drag the divider to resize; the × closes the side pane.
+- The layout button in a chat's header lists the related chats (its orchestrator, its other agents) to open beside it.
+  Right-click any chat in the sidebar for **Open side by side**.
+
 ## Schedules: readable buttons, easy times
 
 ![Run once](docs/screenshots/schedules-custom.png)

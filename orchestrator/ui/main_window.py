@@ -5,7 +5,7 @@ import asyncio
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QSystemTrayIcon, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QSplitter, QSystemTrayIcon, QVBoxLayout, QWidget
 from qfluentwidgets import CaptionLabel, FluentIcon as FIF, FluentWindow, NavigationItemPosition
 
 from orchestrator import startup
@@ -70,11 +70,48 @@ class ChatsPage(QWidget):
         lay.setSpacing(0)
         self.sidebar = Sidebar(db, mgr, self)
         self.chat = ChatView(db, mgr, self)
+        self.db, self.mgr = db, mgr
+        self.split = QSplitter(Qt.Horizontal, self)
+        self.split.setChildrenCollapsible(False)
+        self.split.setHandleWidth(1)
+        self.split.addWidget(self.chat)
+        self.side = None  # second ChatView, built on first "side by side"
         lay.addWidget(self.sidebar)
-        lay.addWidget(self.chat, 1)
+        lay.addWidget(self.split, 1)
         self.sidebar.sessionSelected.connect(self.chat.show_session)
+        self.sidebar.sideBySideRequested.connect(self.open_side)
         self.chat.newChatRequested.connect(self.sidebar.new_chat)
         self.chat.addProjectRequested.connect(self.sidebar.add_project)
+        self.chat.sideBySideRequested.connect(self.open_side)
+
+    def open_side(self, sid: int) -> None:
+        """Show another chat next to the current one (e.g. the orchestrator and one of its agents)."""
+        from orchestrator.ui.chat_view import ChatView
+
+        if self.side is None:
+            self.side = ChatView(self.db, self.mgr, self)
+            self.side.set_side(True)
+            self.side.closeRequested.connect(self.close_side)
+            self.side.sideBySideRequested.connect(self.open_side)
+            if getattr(self.chat, "app", None) is not None:
+                self.side.set_app_control(self.chat.app)
+            self.split.addWidget(self.side)
+        if self.side.isHidden():  # size the pane first so messages wrap to its real width
+            self.side.show()
+            w = max(2, self.split.width())
+            self.split.setSizes([w // 2, w - w // 2])
+        self.side.show_session(sid)
+
+    def close_side(self) -> None:
+        if self.side is not None:
+            self.side.hide()
+            self.side.show_session(None)
+
+    @property
+    def side_sid(self) -> int | None:
+        if self.side is None or self.side.isHidden() or not self.side.session:
+            return None
+        return self.side.session.id
 
 
 class MainWindow(FluentWindow):
@@ -309,7 +346,7 @@ class MainWindow(FluentWindow):
         return OrchestratePage(self.db, self.mgr, self._ensure_om(), parent)
 
     def _orchestrate_built(self, page) -> None:
-        page.openChat.connect(self.open_session)
+        page.openChat.connect(self.open_task_chat)
         page.runner = self.runner
         page.projectsChanged.connect(self._reload_sidebar)
         page.projectsChanged.connect(self._refresh_projects_if_visible)
@@ -320,7 +357,7 @@ class MainWindow(FluentWindow):
         return BoardPage(self.db, self._ensure_om(), parent)
 
     def _board_built(self, page) -> None:
-        page.openChat.connect(self.open_session)
+        page.openChat.connect(self.open_task_chat)
 
     def _make_schedules(self, parent):
         from orchestrator.ui.schedules_page import SchedulesPage
@@ -462,6 +499,19 @@ class MainWindow(FluentWindow):
         self.bring_to_front()
         self.switchTo(self.chats)
         self.chats.sidebar.select(sid)
+
+    def open_pair(self, main_sid: int, side_sid: int) -> None:
+        """Orchestrator chat on the left, one agent's chat on the right."""
+        self.open_session(main_sid)
+        self.chats.open_side(side_sid)
+
+    def open_task_chat(self, sid: int) -> None:
+        """Open a sub-agent's chat next to its orchestrator when it has one, else on its own."""
+        s = self.db.session(sid)
+        if s and s.parent_id and self.db.session(s.parent_id):
+            self.open_pair(s.parent_id, sid)
+        else:
+            self.open_session(sid)
 
     def closeEvent(self, e) -> None:  # noqa: N802
         if self.tray is not None and not self._quitting and self.db.get_setting("ui.close_to_tray", True):
