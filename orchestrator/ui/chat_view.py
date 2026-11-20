@@ -11,6 +11,7 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CheckableMenu,
+    CheckBox,
     FluentIcon as FIF,
     IconWidget,
     InfoBar,
@@ -419,6 +420,14 @@ class ChatView(QWidget):
         self.usage.setObjectName("usageMeter")
         self.usage.setStyleSheet(f"color:{palette()['muted']}; padding-right:8px;")
         hl.addWidget(self.usage)
+        self.autoScroll = CheckBox("Auto-scroll", self.header)
+        self.autoScroll.setObjectName("autoScroll")
+        self.autoScroll.setChecked(True)
+        self.autoScroll.setToolTip("Keep the newest messages in view. Scrolling up turns it off; "
+                                   "scrolling back to the bottom turns it on again.")
+        self.autoScroll.installEventFilter(ToolTipFilter(self.autoScroll))
+        self.autoScroll.toggled.connect(self._auto_scroll_toggled)
+        hl.addWidget(self.autoScroll)
         self.ctxBtn = ToolButton(FIF.PIE_SINGLE, self.header)
         self.ctxBtn.setToolTip("What goes into each prompt (token breakdown, Lean mode)")
         self.ctxBtn.installEventFilter(ToolTipFilter(self.ctxBtn))
@@ -463,7 +472,6 @@ class ChatView(QWidget):
         hh.addStretch(1)
         self.scroll.setWidget(holder)
         self.scroll.verticalScrollBar().rangeChanged.connect(self._autoscroll)
-        self._stick = True
         self.scroll.verticalScrollBar().valueChanged.connect(self._track_stick)
         root.addWidget(self.scroll, 1)
 
@@ -976,9 +984,37 @@ class ChatView(QWidget):
         self._add(card)
 
     # ---- scrolling
+    # The Auto-scroll box in the header is the single source of truth: checked keeps the newest
+    # message in view. Scrolling up unchecks it, scrolling back to the bottom checks it again,
+    # and sending a message (or opening a chat) checks it and jumps to the bottom.
+    STICK_PX = 40  # this close to the bottom counts as "at the newest message"
+
+    @property
+    def _stick(self) -> bool:
+        return self.autoScroll.isChecked()
+
+    @_stick.setter
+    def _stick(self, on: bool) -> None:
+        if self.autoScroll.isChecked() != on:
+            self.autoScroll.setChecked(on)  # toggled -> _auto_scroll_toggled jumps down when on
+        elif on:
+            self._scroll_to_bottom()
+
+    def _auto_scroll_toggled(self, on: bool) -> None:
+        if on:
+            self._scroll_to_bottom()
+
+    def _scroll_to_bottom(self) -> None:
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
     def _track_stick(self, v: int) -> None:
         bar = self.scroll.verticalScrollBar()
-        self._stick = bar.maximum() - v < 60
+        at_bottom = bar.maximum() - v < self.STICK_PX
+        if at_bottom != self.autoScroll.isChecked():
+            self.autoScroll.blockSignals(True)  # following the user's scroll, so no jump
+            self.autoScroll.setChecked(at_bottom)
+            self.autoScroll.blockSignals(False)
 
     def _autoscroll(self, _min: int, mx: int) -> None:
         if self._stick:
