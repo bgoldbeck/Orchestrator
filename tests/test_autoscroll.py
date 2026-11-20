@@ -25,27 +25,29 @@ def test_autoscroll_follows_scrolling(qapp, tmp_path, monkeypatch):
     db = Database(tmp_path / "t.db")
     p = db.add_project(str(tmp_path), "p")
     s = db.create_session(p.id, "claude", "claude-opus-5-5", "medium", title="T")
-    for i in range(40):
-        db.add_message(s.id, "user", "text", {"text": f"message {i}"})
+    db.add_message(s.id, "user", "text", {"text": "hello"})
     v = ChatView(db, SessionManager(db))
     v.resize(700, 500)
     v.show()
     v.show_session(s.id)
-    qapp.processEvents()
+    for i in range(40):
+        v._add(UserMessage(f"message {i}"), False)
+    for _ in range(5):
+        qapp.processEvents()
     bar = v.scroll.verticalScrollBar()
     box = v.autoScroll
-    assert box.isChecked() and bar.maximum() > 0
+    assert box.isChecked() and bar.maximum() > 0, (bar.maximum(), v.scroll.viewport().height(), v.column.height())
     assert bar.value() == bar.maximum()
 
     # new content while checked: stays pinned to the newest message
-    v._add(UserMessage("new one"))
+    v._add(UserMessage("new one"), False)
     qapp.processEvents()
     assert bar.value() == bar.maximum()
 
     # scroll up: box unchecks, and new content no longer moves the view
     bar.setValue(0)
     assert not box.isChecked()
-    v._add(UserMessage("another"))
+    v._add(UserMessage("another"), False)
     qapp.processEvents()
     assert bar.value() == 0 and not box.isChecked()
 
